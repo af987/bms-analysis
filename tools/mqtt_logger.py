@@ -178,6 +178,22 @@ def load_config(env: Mapping[str, str]) -> dict:
     }
 
 
+def log_connection_events(client, host: str, port: int) -> None:
+    """Print failed connection attempts and disconnects to stderr (the journal).
+
+    paho retries on its own, but without these callbacks a broker that can't be reached (e.g. a
+    .local name that doesn't resolve) leaves nothing in the journal until the stall watchdog fires.
+    """
+    def on_connect_fail(client, userdata):
+        print(f"mqtt_logger: could not connect to {host}:{port}, retrying", file=sys.stderr)
+
+    def on_disconnect(client, userdata, flags, reason_code, properties):
+        print(f"mqtt_logger: disconnected from {host}:{port}: {reason_code}", file=sys.stderr)
+
+    client.on_connect_fail = on_connect_fail
+    client.on_disconnect = on_disconnect
+
+
 def main() -> None:
     import paho.mqtt.client as mqtt
 
@@ -202,6 +218,7 @@ def main() -> None:
     client.username_pw_set(cfg["user"], cfg["password"])
     client.on_connect = on_connect
     client.on_message = on_message
+    log_connection_events(client, cfg["host"], cfg["port"])
     client.reconnect_delay_set(min_delay=1, max_delay=60)
     client.connect_async(cfg["host"], cfg["port"])
     client.loop_start()

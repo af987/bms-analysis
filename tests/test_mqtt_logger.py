@@ -212,3 +212,25 @@ def test_load_config_reads_stall_timeout():
     env = {"MQTT_HOST": "h", "MQTT_USER": "u", "MQTT_PASSWORD": "p", "MQTT_TOPIC_PREFIX": "G"}
     assert load_config(env)["stall_s"] == 600
     assert load_config({**env, "MQTT_STALL_S": "90"})["stall_s"] == 90
+
+
+# On the first real box the broker name (homeassistant.local) failed to resolve for 20 minutes
+# and paho retried silently, so the journal showed nothing until the stall watchdog fired.
+
+class _FakeClient:
+    pass
+
+
+def test_connection_failures_are_logged(capsys):
+    client = _FakeClient()
+    mqtt_logger.log_connection_events(client, "homeassistant.local", 1883)
+    client.on_connect_fail(client, None)
+    err = capsys.readouterr().err
+    assert "could not connect to homeassistant.local:1883" in err
+
+
+def test_unexpected_disconnects_are_logged(capsys):
+    client = _FakeClient()
+    mqtt_logger.log_connection_events(client, "192.168.86.36", 1883)
+    client.on_disconnect(client, None, None, "Unspecified error", None)
+    assert "disconnected from 192.168.86.36:1883: Unspecified error" in capsys.readouterr().err
