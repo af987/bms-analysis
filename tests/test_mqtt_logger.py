@@ -234,3 +234,38 @@ def test_unexpected_disconnects_are_logged(capsys):
     mqtt_logger.log_connection_events(client, "192.168.86.36", 1883)
     client.on_disconnect(client, None, None, "Unspecified error", None)
     assert "disconnected from 192.168.86.36:1883: Unspecified error" in capsys.readouterr().err
+
+
+# GivTCP publishes the givenergy-modbus register values under raw/invertor/<name> and
+# raw/batteries/<serial>/<name>, with the same names tcp_poller records. FieldNamer gives those
+# topics the poller's column names, so the notebook works unchanged on MQTT captures.
+
+def test_raw_inverter_topic_gets_poller_name():
+    namer = mqtt_logger.FieldNamer(PREFIX)
+    assert namer(f"{PREFIX}/raw/invertor/v_battery") == "v_battery"
+    assert namer(f"{PREFIX}/raw/invertor/battery_charge_limit") == "battery_charge_limit"
+
+
+def test_raw_battery_topic_gets_poller_name():
+    namer = mqtt_logger.FieldNamer(PREFIX)
+    assert namer(f"{PREFIX}/raw/batteries/AB1234C567/t_max") == "t_max"
+    assert namer(f"{PREFIX}/raw/batteries/AB1234C567/v_cell_16") == "v_cell_16"
+
+
+def test_only_the_first_battery_gets_poller_names():
+    namer = mqtt_logger.FieldNamer(PREFIX)
+    assert namer(f"{PREFIX}/raw/batteries/AB1234C567/soc") == "soc"
+    assert namer(f"{PREFIX}/raw/batteries/ZZ9999Z999/soc") == "raw_batteries_ZZ9999Z999_soc"
+
+
+def test_stale_empty_serial_battery_topics_keep_path_names():
+    # GivTCP can leave retained raw/batteries//<name> topics with frozen values.
+    namer = mqtt_logger.FieldNamer(PREFIX)
+    assert namer(f"{PREFIX}/raw/batteries//soc") == "raw_batteries_soc"
+    assert namer(f"{PREFIX}/raw/batteries/AB1234C567/soc") == "soc"
+
+
+def test_raw_topics_not_recorded_by_the_poller_keep_path_names():
+    namer = mqtt_logger.FieldNamer(PREFIX)
+    assert namer(f"{PREFIX}/raw/invertor/battery_voltage_adjust") == "raw_invertor_battery_voltage_adjust"
+    assert namer(f"{PREFIX}/Power/Power/Battery_Power") == "Power_Power_Battery_Power"

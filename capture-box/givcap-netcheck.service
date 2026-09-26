@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart Wi-Fi if the gateway is unreachable
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/givcap-netcheck

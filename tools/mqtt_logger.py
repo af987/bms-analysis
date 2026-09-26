@@ -33,9 +33,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 
-# GivTCP topic path after the prefix -> tcp_poller.py field name, so the
-# notebook and join_streams.py see the same column names as a poller capture.
-# Filled in from a recording of the real broker (capture-box/README.md).
+try:
+    from tools.tcp_poller import REGISTER_FIELDS as POLLER_FIELDS
+except ImportError:  # run as a script from tools/
+    from tcp_poller import REGISTER_FIELDS as POLLER_FIELDS
+
+# Extra GivTCP topic path after the prefix -> tcp_poller.py field name. FieldNamer already maps
+# GivTCP's raw/invertor/<name> and raw/batteries/<serial>/<name> topics by rule, so this is
+# only needed for topics outside those.
 TOPIC_TO_FIELD: dict[str, str] = {}
 
 DEFAULT_PATH = "~/captures/%Y-%m-%d/tcp.ndjson"
@@ -53,6 +58,38 @@ def field_name(topic: str, prefix: str) -> str:
     if rest in TOPIC_TO_FIELD:
         return TOPIC_TO_FIELD[rest]
     return re.sub(r"[^0-9A-Za-z]+", "_", rest).strip("_")
+
+
+class FieldNamer:
+    """Column names for GivTCP topics, using tcp_poller's names where GivTCP has the same value.
+
+    GivTCP publishes the givenergy-modbus register values under raw/invertor/<name> and
+    raw/batteries/<serial>/<name>, with the names tcp_poller records. Those topics get the
+    poller's name, so the notebook works unchanged. tcp_poller records the first battery only,
+    so only the first battery serial seen is mapped; a second pack keeps path-based names.
+    GivTCP can also leave retained raw/batteries//<name> topics (empty serial) with frozen
+    values, and those keep path-based names too. Everything else goes through field_name().
+    """
+
+    _RAW = re.compile(r"^raw/(?:invertor|batteries/([^/]*))/([A-Za-z0-9_]+)$")
+
+    def __init__(self, prefix: str):
+        self.prefix = prefix
+        self.battery_serial: str | None = None
+
+    def __call__(self, topic: str) -> str:
+        rest = topic[len(self.prefix):].lstrip("/") if topic.startswith(self.prefix + "/") else topic
+        m = self._RAW.match(rest)
+        if m and m.group(2) in POLLER_FIELDS:
+            serial = m.group(1)
+            if serial is None:                          # raw/invertor/<name>
+                return m.group(2)
+            if serial:
+                if self.battery_serial is None:
+                    self.battery_serial = serial
+                if serial == self.battery_serial:
+                    return m.group(2)
+        return field_name(topic, self.prefix)
 
 
 def parse_payload(payload: bytes):
@@ -202,6 +239,7 @@ def main() -> None:
     writer = SnapshotWriter(path, expected_fields=expected_fields(path, datetime.now(timezone.utc)))
     watchdog = Watchdog(cfg["stall_s"], time.monotonic())
     prefix = cfg["prefix"]
+    namer = FieldNamer(prefix)
 
     def on_connect(client, userdata, flags, reason_code, properties):
         if reason_code.is_failure:
@@ -212,7 +250,7 @@ def main() -> None:
 
     def on_message(client, userdata, msg):
         watchdog.feed(time.monotonic())
-        writer.update(field_name(msg.topic, prefix), parse_payload(msg.payload))
+        writer.update(namer(msg.topic), parse_payload(msg.payload))
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="givcap-mqtt-logger")
     client.username_pw_set(cfg["user"], cfg["password"])

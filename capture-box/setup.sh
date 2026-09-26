@@ -37,11 +37,13 @@ sudo -u "$USER_NAME" "$REPO/.venv/bin/pip" install --quiet 'paho-mqtt>=2.0'
 sudo -u "$USER_NAME" mkdir -p "$HOME_DIR/captures"
 
 install -m 0755 "$BOX/givcap-compress" /usr/local/bin/givcap-compress
+install -m 0755 "$BOX/givcap-netcheck" /usr/local/bin/givcap-netcheck
 render "$BOX/givcap-status" > /usr/local/bin/givcap-status
 chmod 0755 /usr/local/bin/givcap-status
 
 render "$BOX/99-rs485.rules" > /etc/udev/rules.d/99-rs485.rules
-for unit in givcap-wire.service givcap-mqtt.service givcap-compress.service givcap-compress.timer; do
+for unit in givcap-wire.service givcap-mqtt.service givcap-compress.service givcap-compress.timer \
+            givcap-netcheck.service givcap-netcheck.timer; do
     render "$BOX/$unit" > "/etc/systemd/system/$unit"
 done
 
@@ -64,8 +66,8 @@ udevadm trigger --subsystem-match=tty
 systemctl daemon-reload
 systemctl daemon-reexec
 systemctl enable systemd-time-wait-sync.service
-systemctl enable givcap-wire.service givcap-mqtt.service givcap-compress.timer
-systemctl start givcap-compress.timer
+systemctl enable givcap-wire.service givcap-mqtt.service givcap-compress.timer givcap-netcheck.timer
+systemctl start givcap-compress.timer givcap-netcheck.timer
 systemctl restart givcap-mqtt.service
 # The wire logger only starts when /dev/rs485 exists; udev starts it when the dongle is plugged in.
 # --no-block so setup doesn't wait out the device timeout if the dongle is missing.
