@@ -70,20 +70,21 @@ rsync -av givcap.local:captures/ ~/givenergy/captures/
 
 Keep raw captures out of git. They contain your battery and inverter serial numbers. Run [tools/redact.py](../tools/redact.py) before sharing anything.
 
-## Map GivTCP topics to poller names
+## GivTCP topic names
 
-`tools/mqtt_logger.py` writes unmapped topics under names made from the topic path, with each `/` or other symbol replaced by `_` and the case kept. To give the main values the same names that `tools/tcp_poller.py` uses, so that the analysis notebook works unchanged, record a sample and fill in `TOPIC_TO_FIELD`:
+`tools/mqtt_logger.py` gives GivTCP's register topics, `raw/invertor/<name>` and
+`raw/batteries/<serial>/<name>` (first battery only), the same column names that
+`tools/tcp_poller.py` uses (`soc`, `t_max`, `v_cell_01` and so on), so the analysis notebook works
+unchanged. Every other topic is recorded under a name made from its path, with each `/` or other
+symbol replaced by `_` and the case kept. GivTCP can leave retained `raw/batteries//<name>` topics
+with an empty serial and frozen values; those keep their path names and are not mistaken for the
+live battery.
+
+To see what the broker publishes, record a sample (this reads the broker details from
+`/etc/givcap/mqtt.env`, so the password doesn't end up in your shell history):
 
 ```
 sudo bash -c 'set -a; . /etc/givcap/mqtt.env; mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" -t "$MQTT_TOPIC_PREFIX/#" -v -W 120' > givtcp_sample.txt
 ```
 
-This reads the broker details from `/etc/givcap/mqtt.env`, so the password doesn't end up in your shell history.
-
-Each line of the sample is a topic and its value. Pick the topic for each value that `tools/tcp_poller.py` records (e.g. the battery SoC topic for `soc`), and add it to `TOPIC_TO_FIELD` in `tools/mqtt_logger.py`, keyed by the topic path after the prefix:
-
-```python
-TOPIC_TO_FIELD = {"Battery_Details/SOC": "soc", ...}
-```
-
-Replace any serial numbers in the sample with `XXXXXXXXXX` before committing it as a test fixture. Then restart the logger with `sudo systemctl restart givcap-mqtt`.
+Replace serial numbers with `XXXXXXXXXX` before sharing it.
