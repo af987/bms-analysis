@@ -43,16 +43,19 @@ docker exec -u givcapuser givcap givcap-status
 
 ## Wi-Fi on a mesh network
 
-On the first real box, the Pi 3's built-in Broadcom Wi-Fi went silent while still reporting
-"connected" whenever a mesh access point (Google/Nest Wifi here) sent an 802.11v roaming request
-(`WNM: Preferred List Available` then `brcmf_p2p_send_action_frame: Unknown Frame` in the
-journal). A USB Wi-Fi adapter with a mac80211 driver handles those requests properly. The box now
-uses a TP-Link Archer T3U (RTL8812BU, driver `rtw88_8822bu`) with the built-in Wi-Fi turned off
-(`dtoverlay=disable-wifi` in `/boot/firmware/config.txt`), pinned to 2.4 GHz for range.
+The Pi's built-in Broadcom Wi-Fi firmware mishandles mesh roaming requests (802.11v, e.g. from
+Google/Nest Wifi) and WPA3. On the first real box it went silent while still reporting
+"connected" (`WNM: Preferred List Available`, then `brcmf_p2p_send_action_frame: Unknown Frame`
+in the journal). `setup.sh` loads the driver with `roamoff=1 feature_disable=0x82000`, which hands
+roaming and authentication to wpa_supplicant, as Home Assistant OS does. It takes effect after a
+reboot. Pinning the connection to 2.4 GHz helps range:
+`sudo nmcli con modify <connection> 802-11-wireless.band bg`.
 
-If the mesh uses WPA2/WPA3 mixed mode, a USB adapter tries WPA3 (SAE) first, and that needs the
-real passphrase. The hashed key Raspberry Pi Imager saves only works for WPA2. Recreate the
-connection with `sudo nmcli --ask dev wifi connect <SSID> name givcap-wifi`.
+A USB adapter is not a reliable way round it. A TP-Link Archer T3U (RTL8812BU, in-kernel driver
+`rtw88_8822bu`) logged USB errors at every boot and dropped with `failed to get tx report from
+firmware`, a known problem with that driver on Raspberry Pi kernels. If you do use a USB adapter
+and the mesh uses WPA2/WPA3 mixed mode, it will try WPA3 first, which needs the real passphrase:
+the hashed key Raspberry Pi Imager saves only works for WPA2.
 
 ## If the box drops off the network
 

@@ -1,28 +1,45 @@
 #!/bin/bash
-# Restart Wi-Fi if the default gateway stops answering for 3 checks in a row. Run every minute by
-# givcap-netcheck.timer. On the first real box the Pi's Wi-Fi went silent while still reporting
-# "connected" after a mesh access point sent a roaming request.
-STATE="${GIVCAP_NETCHECK_STATE:-/run/givcap-netcheck.fails}"
+# Run every minute by givcap-netcheck.timer.
+#
+# If the Wi-Fi reports "connected" but the default gateway doesn't answer for 3 checks in a row,
+# restart the Wi-Fi connection. On the first real box the Wi-Fi went silent while still reporting
+# connected after a mesh access point sent a roaming request.
+#
+# If the Wi-Fi is not connected, NetworkManager is already retrying, so leave it alone: an
+# earlier version restarted a connection that had just come back. Only if it stays disconnected
+# for 15 checks, switch the radio off and on once.
+STATE="${GIVCAP_NETCHECK_STATE:-/run/givcap-netcheck.state}"
+read -r dead down < "$STATE" 2>/dev/null
+dead=${dead:-0}
+down=${down:-0}
+
 GW=$(ip -4 route | awk '/^default/ {print $3; exit}')
 if [ -n "$GW" ] && ping -c 3 -W 2 "$GW" >/dev/null 2>&1; then
-    echo 0 > "$STATE"
+    echo "0 0" > "$STATE"
     exit 0
 fi
-n=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
-echo "$n" > "$STATE"
-logger -t givcap-netcheck "gateway ${GW:-none} unreachable ($n)"
-if [ "$n" -ge 3 ]; then
-    WIFI=$(nmcli -t -f NAME,TYPE con show --active | awk -F: '$2 == "802-11-wireless" {print $1; exit}')
-    if [ -n "$WIFI" ]; then
+
+if nmcli -t -f TYPE,STATE dev | grep -q '^wifi:connected$'; then
+    down=0
+    dead=$((dead + 1))
+    logger -t givcap-netcheck "Wi-Fi connected but gateway ${GW:-none} unreachable ($dead)"
+    if [ "$dead" -ge 3 ]; then
+        WIFI=$(nmcli -t -f NAME,TYPE con show --active | awk -F: '$2 == "802-11-wireless" {print $1; exit}')
         logger -t givcap-netcheck "restarting Wi-Fi connection $WIFI"
         nmcli con down "$WIFI"
         sleep 2
         nmcli con up "$WIFI"
-    else
-        logger -t givcap-netcheck "no active Wi-Fi connection; toggling the Wi-Fi radio"
+        dead=0
+    fi
+else
+    dead=0
+    down=$((down + 1))
+    if [ "$down" -ge 15 ]; then
+        logger -t givcap-netcheck "Wi-Fi disconnected for $down checks; switching the radio off and on"
         nmcli radio wifi off
         sleep 2
         nmcli radio wifi on
+        down=0
     fi
-    echo 0 > "$STATE"
 fi
+echo "$dead $down" > "$STATE"

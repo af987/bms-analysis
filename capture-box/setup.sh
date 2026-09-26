@@ -55,6 +55,11 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' > /etc/systemd/journ
 printf '[Manager]\nRuntimeWatchdogSec=15s\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/givcap-watchdog.conf
 systemctl restart systemd-journald
 
+# The Pi's built-in Broadcom Wi-Fi mishandles mesh roaming requests and WPA3 in its firmware and
+# can go silent while reporting "connected". Leave roaming and authentication to wpa_supplicant
+# (the same options Home Assistant OS uses). Takes effect at the next boot.
+echo "options brcmfmac roamoff=1 feature_disable=0x82000" > /etc/modprobe.d/brcmfmac.conf
+
 install -d -m 0700 /etc/givcap
 if [[ ! -f /etc/givcap/mqtt.env ]]; then
     install -m 0600 "$BOX/mqtt.env.example" /etc/givcap/mqtt.env
