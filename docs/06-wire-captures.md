@@ -163,6 +163,51 @@ At the same poll that the current dropped to zero, HR19 bit 3 (0-indexed) starte
 
 The joined parquet file doesn't include HR20, HR21, HR22, HR24, HR26 or HR27, because the decoder didn't extract them when it was made. The decoder now does, so rerunning `join_streams.py` on the raw wire log adds them.
 
+## Findings from my G3 capture (September 2026)
+
+I captured my own Hybrid Gen3 LV (firmware D0.316-A0.316) with its GivEnergy 8.2 kWh battery (BMS firmware 3020) using the Raspberry Pi capture box in [capture-box/](../capture-box/README.md), from 26 to 27 September 2026. The dongle was tapped on the battery's "Batt to Batt" comms terminals, and GivTCP's MQTT output was recorded alongside. The capture covers an evening of discharge, a forced overnight charge to 100%, and the morning at full charge. The inverter setting HR109 `enable_bms_read` was 1, and HR111/HR112 (charge/discharge limit) were both 44.
+
+### Poll cadence and turnaround
+
+The pattern matches the 90-hour capture above. In 7 hours on 27 September:
+
+| Query | Requests | Cadence | BMS turnaround |
+|---|---:|---|---|
+| Device 1 FC3 HR0 to HR27 | 103,122 | every 245.8 ms (236 to 482 ms) | 101 ms median (97 to 105) |
+| FC4 block 1 (start 0x00, count 21), devices 1 to 5 | about 250 each | about every 10 s in bursts, 100 s on average | 87 ms median |
+| FC4 blocks 2 and 3 (0x15/19 and 0x28/20), devices 1 to 5 | about 126 each | every 200.5 s | 83 to 85 ms median |
+
+Every request got a reply, including those for devices 2 to 5. With one battery fitted, the master battery answers for the absent packs with the empty-slot reply described in [03-input-registers.md](03-input-registers.md): all zeros, with the temperature fields at `0xF556` (-273.0 C).
+
+### The limits during a full charge
+
+The battery reported HR25 = 90.00 A and HR26 = HR27 = 80.00 A throughout, except at the very top of the charge.
+
+| Time (UTC) | SoC | Pack voltage (HR22) | Charge current | HR26 | HR27 |
+|---|---|---|---|---|---|
+| 22:30 to 23:15 | 59% to 90% | 53.4 V to 54.35 V | 60.5 A | 80 A | 80 A |
+| 23:20 to 23:35 | 93% to 98% | 54.3 V to 55.2 V | 43.6 A down to 14.6 A | 80 A | 80 A |
+| 23:40 | 99% | 56.9 V | 2.9 A | **3.20 A** | 80 A |
+| from 23:45 | 100% | about 56.1 V to 56.6 V | about 0 A | 3.20 A | 80 A |
+
+Three things follow:
+
+- **HR26 caps charging on a G3 LV.** When the BMS cut HR26 to 3.20 A and left HR27 at 80 A, the charge current dropped to about 2.9 A at once and stayed under HR26, as the labels in [02-holding-registers.md](02-holding-registers.md) say. The G3 LV DSP firmware agrees (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
+- **The inverter tapers the charge itself before the BMS does.** The current held at about 60.5 A (the inverter's 3600 W charge rate at about 54 V) up to 90% SoC, then fell to about 14.6 A over 20 minutes with HR26 and HR27 still at 80 A. An emulator doesn't need to produce this taper; the inverter does it.
+- **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between.
+
+### Voltages at the top of the charge
+
+The inverter's own battery voltage reading (GivTCP) was 0.2 V to 0.3 V above HR22 at rest and about 1.3 V above it at 60 A, the drop in the battery cable. At 100% the pack sat at about 56.1 V to 56.6 V (median 56.13 V by HR22). The 3 A top-ups briefly took HR22 to 57.53 V and the inverter's reading to 57.61 V, with no fault raised.
+
+### Discharge
+
+During the evening the battery discharged at up to 69.7 A (about 3.6 kW), from 99% down to 58% SoC, with HR27 at 80 A throughout. The lowest pack voltage was 52.18 V.
+
+### Gaps in this capture
+
+The poll gaps in this capture were the capture box being off or restarting, not the inverter. The first box's Wi-Fi also dropped several times (see the capture-box README), which didn't affect the wire log. From 27 September the logger writes a start marker, so `tools/capture_checks.py` can tell capture gaps from inverter restarts.
+
 ## Capture experiments worth running
 
 To resolve remaining open questions, useful targeted captures would be:
