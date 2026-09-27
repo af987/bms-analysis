@@ -1,17 +1,19 @@
 """Checks for a joined capture (join_streams.py output) that answer the open G3 LV questions.
 
 1. limit_roles   -- does charging (and discharging) current follow the HR26 or the HR27 limit?
-                    docs/02 labels HR26 charge and HR27 discharge; G3 LV firmware suggests the
-                    reverse (see the G3 LV note in docs/02).
+                    docs/02 labels HR26 charge and HR27 discharge; a G3 LV capture confirms it
+                    (see the G3 LV note in docs/02).
 2. end_of_charge -- charging current by pack voltage (HR22), to see where the inverter tapers
                     and the highest voltage it reaches.
-3. cold_boots    -- after each gap in the HR poll (inverter off), how long from the first poll
-                    to the first real battery current.
+3. cold_boots    -- after each gap in the HR poll, how long from the first poll to the first real
+                    battery current. Pass the wire logs so each gap can be classed as an inverter
+                    restart or a capture gap (the logger's start markers).
 
 All three read the device-1 FC3 HR poll rows only. HR23 is positive for charge.
 
-Run: python tools/capture_checks.py path/to/joined.parquet
+Run: python tools/capture_checks.py path/to/joined.parquet [wire.log ...]
 """
+import re
 import sys
 from pathlib import Path
 
@@ -80,24 +82,56 @@ def end_of_charge(df: pd.DataFrame, bin_V: float = 0.2, min_current_A: float = 1
     return table
 
 
-def cold_boots(df: pd.DataFrame, min_gap_s: float = 60, min_current_A: float = 1.0) -> list:
-    """After each HR-poll gap longer than min_gap_s, time from the first poll to the first real current."""
+def logger_starts(wire_paths) -> list:
+    """UTC times of the '# <time>Z logger started' markers serial_hexdump_logger writes on start."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import parse_log  # noqa: E402
+
+    starts = []
+    for path in wire_paths:
+        with parse_log.open_capture(path) as f:
+            for line in f:
+                m = MARKER_RE.match(line.replace("\x00", "").strip())
+                if m:
+                    starts.append(pd.Timestamp(m.group(1).rstrip("Z"), tz="UTC"))
+    return sorted(starts)
+
+
+MARKER_RE = re.compile(r"^# (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+Z) logger started$")
+
+
+def cold_boots(df: pd.DataFrame, min_gap_s: float = 60, min_current_A: float = 1.0,
+               logger_starts: list | None = None) -> list:
+    """After each HR-poll gap longer than min_gap_s, time from the first poll to the first real current.
+
+    Each gap gets a kind: "capture gap" if the logger (re)started inside it (the Pi was off, not the
+    inverter), "inverter restart" if it didn't, or "restart or capture gap" when logger_starts is
+    None because the wire log has no start markers.
+    """
     hr = _hr_rows(df)
     gaps = hr["ts"].diff().dt.total_seconds()
     boots = []
     for k in gaps.index[gaps > min_gap_s]:
         start = hr.loc[k, "ts"]
+        gap_from = hr.loc[k - 1, "ts"]
         after = hr.loc[k:]
         live = after[(after["hr23_pack_current_cA"] / 100).abs() >= min_current_A]
+        if logger_starts is None:
+            kind = "restart or capture gap"
+        elif any(gap_from < t <= start for t in logger_starts):
+            kind = "capture gap"
+        else:
+            kind = "inverter restart"
         boots.append({
             "restart": start,
             "gap_s": float(gaps[k]),
+            "kind": kind,
             "first_current_after_s": (float((live["ts"].iloc[0] - start).total_seconds()) if len(live) else None),
         })
     return boots
 
 
-def report(df: pd.DataFrame) -> str:
+def report(df: pd.DataFrame, starts: list | None = None) -> str:
     """Run each check that the capture has the columns for, and say which were skipped."""
     lines = []
     missing = _missing(df, ("hr23_pack_current_cA", "hr26_limit_cA", "hr27_limit_cA"))
@@ -122,21 +156,24 @@ def report(df: pd.DataFrame) -> str:
     if missing:
         lines.append(f"== Cold boots: skipped, missing {', '.join(missing)}")
     else:
-        boots = cold_boots(df)
-        lines.append(f"== Cold boots: {len(boots)} found")
+        boots = cold_boots(df, logger_starts=starts)
+        lines.append(f"== Poll gaps: {len(boots)} found")
         for b in boots:
             after = "no current yet" if b["first_current_after_s"] is None else f"current after {b['first_current_after_s']:.1f} s"
-            lines.append(f"  {b['restart']}: poll gap {b['gap_s']:.0f} s, {after}")
+            lines.append(f"  {b['restart']}: {b['kind']}, poll gap {b['gap_s']:.0f} s, {after}")
     if any("skipped" in l for l in lines):
         lines.append("Skipped checks need columns from the current decoder: rerun join_streams.py on the raw wire log.")
     return "\n".join(lines)
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python tools/capture_checks.py path/to/joined.parquet", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print("Usage: python tools/capture_checks.py path/to/joined.parquet [wire.log ...]", file=sys.stderr)
         sys.exit(2)
-    print(report(pd.read_parquet(Path(sys.argv[1]))))
+    starts = logger_starts([Path(p) for p in sys.argv[2:]]) if len(sys.argv) > 2 else None
+    if starts == []:
+        starts = None      # wire logs from before the logger wrote start markers
+    print(report(pd.read_parquet(Path(sys.argv[1])), starts))
 
 
 if __name__ == "__main__":
