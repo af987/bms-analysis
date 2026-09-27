@@ -200,6 +200,18 @@ Three things follow:
 
 The inverter's own battery voltage reading (GivTCP) was 0.2 V to 0.3 V above HR22 at rest and about 1.3 V above it at 60 A, the drop in the battery cable. At 100% the pack sat at about 56.1 V to 56.6 V (median 56.13 V by HR22). The 3 A top-ups briefly took HR22 to 57.53 V and the inverter's reading to 57.61 V, with no fault raised.
 
+There were three top-ups after the main charge:
+
+| Top-up (UTC) | Charge current | HR22 | Inverter's reading | HR20 while charging |
+|---|---|---|---|---|
+| 23:38 to 23:43, end of the main charge | 14.7 A down to 2.8 A | 55.39 V to 57.06 V | up to 57.37 V, above 57.0 V for about 3 minutes | 0 |
+| 00:35 to 00:37 | 2.9 A | 56.13 V to 57.13 V | up to 57.35 V, above 57.0 V for about 2.5 minutes | 0 |
+| 01:21 to 01:22 | 2.9 A | 56.66 V to 57.52 V | up to 57.61 V, above 57.0 V for about 2 minutes | 0 |
+
+HR20 bit 2 (over-voltage) was clear during every charge. It was set only when the last top-up ended, at the 57.52 V peak of HR22, and it stayed set for 271 s while the pack discharged at about 2.8 A (HR19 bit 5, see [02-holding-registers.md](02-holding-registers.md#evidence-from-my-g3-capture-september-2026)). HR22 fell from its peak and was above 57.0 V for only about 70 s of that time.
+
+The inverter settings HR98 and HR97 were 58.5 V and 43.2 V all night. The G3's over-voltage trip comes from HR98 and is at 59.5 V for 1 s on the inverter's own reading (see [05-inverter-firmware.md](05-inverter-firmware.md#battery-voltage-checks)), so readings up to 57.61 V for minutes with no fault are what the firmware predicts. The inverter's status stayed normal all night.
+
 ### Discharge
 
 During the evening the battery discharged at up to 69.7 A (about 3.6 kW), from 99% down to 58% SoC, with HR27 at 80 A throughout. The lowest pack voltage was 52.18 V.
