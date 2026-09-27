@@ -66,7 +66,8 @@ def load_byte_stream(path):
     timestamps = []
     with open_capture(path) as f:
         for line in f:
-            m = LINE_RE.match(line.rstrip())
+            # A power cut can leave a run of NUL bytes where the logger was writing; drop them.
+            m = LINE_RE.match(line.replace("\x00", "").rstrip())
             if not m:
                 continue
             # Aware if the line ends in Z (UTC); naive for older local-time logs.
