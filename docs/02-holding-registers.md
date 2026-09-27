@@ -37,7 +37,7 @@ The 28 registers (= 56 bytes) decoded at the byte level:
 | 12  | 24-25 | constant `0x0030` (48) | Init writes literal `0x30`. Possibly a **hardware revision** field. |
 | 13  | 26-27 | constant `0x0BCE` (3022) | Confirmed: `movw r0, #0xbce; strh r0, [r4, #0x1a]`. **BMS firmware version.** |
 | 14  | 28-29 | constant `0x0000` in capture | **Inverter-set "charge mode selector active" flag.** Source `*(u8*)0x200000E9` is a normalised mirror of `*(u8*)0x200000E8`. The setter is the Modbus FC=6 reg-2 path (TBB at flash `0x0801E240` entry 2) where the inverter writes a charge-mode index `0..9` (`0` = auto, `1..9` = forced mode). `fc3_update_task` normalises non-zero values to `1`. HR14 is therefore `1` iff the inverter currently has a non-zero charge mode selected. Stays at `0` in normal auto-mode operation, which matches the capture. |
-| 15  | 30-31 | constant `0x0000` in capture | 3-bit OR-mask. **Sources confirmed empirically**: bit 0 (lsb) from `*(u8*)0x2000013F` (non-zero); bit 1 from `*(u8*)0x20000198`; bit 2 from `*(u8*)0x20000197`. **Bit 0 fully writer-traced**: `compute_pack_current_limits` reads HR21's SoC source `*(u16*)0x20000184`, compares to `0x64`, writes `1` to `*(u8*)0x2000013F` if SoC >= 100 else `0`. So **bit 0 = "primary pack SoC = 100%"** ("balancing-ready"). Bits 1 and 2 are PACE-derived (written by `pace_cid2_dispatch` via base+offset addressing only when a valid PACE frame is in the RX buffer; specific PACE field for each bit not yet traced). See [Register 15 Bits](#register-15-bits). |
+| 15  | 30-31 | constant `0x0000` in Ken's capture. On my battery (BMS firmware 3020) it was 1 during most of a forced charge, from 62% to 98% SoC, and 0 at 100%. See [Register 15 Bits](#register-15-bits). | 3-bit OR-mask. **Sources confirmed empirically**: bit 0 (lsb) from `*(u8*)0x2000013F` (non-zero); bit 1 from `*(u8*)0x20000198`; bit 2 from `*(u8*)0x20000197`. **Bit 0 fully writer-traced**: `compute_pack_current_limits` reads HR21's SoC source `*(u16*)0x20000184`, compares to `0x64`, writes `1` to `*(u8*)0x2000013F` if SoC >= 100 else `0`. The reading from this was bit 0 = "primary pack SoC = 100%" ("balancing-ready"). My G3 capture contradicts it: bit 0 was set during the bulk charge and never at 100%. Bits 1 and 2 are PACE-derived (written by `pace_cid2_dispatch` via base+offset addressing only when a valid PACE frame is in the RX buffer; specific PACE field for each bit not yet traced). See [Register 15 Bits](#register-15-bits). |
 | 16  | 32-33 | constant `0x0000` in capture | **AFE-derived state byte** at `*(u8*)0x20000518`. The address sits inside a struct accessed via base+offset by `pace_cid2_dispatch` at flash `0x0801A17A` (nearby literals `0x20000524`/`0x20000530` are loaded inside that function). Ghidra's autoanalysis doesn't unify the indirect writes, but architecturally HR16 mirrors whatever state byte the PACE/Pylontech inter-pack protocol parser writes into that struct position. Specific PACE field unconfirmed -- would require frame-injection tracing. |
 | 17  | 34-35 | varies (`0x114A`-`0x1219`, ~142 distinct values). In the 90-hour G3 capture it changed once per second (322,726 changes in 323,009 s), mostly by +1. | **Low 16 bits of a hash of 6 BCD bytes.** The once-per-second change means the source bytes are a BCD real-time clock, not a serial fragment as first assumed. Algorithm: 6 BCD bytes at SRAM `0x20000105..A` are reverse-byte-order copied to `0x20000190..A` by an upstream copier at flash `0x08001362`. Hash applies forward over `0x20000190..A`: `acc = (bcd_to_dec(b[i]) + acc) << shifts[i]` for `i=0..4` with `shifts=[4,5,5,6,6]`; then `r = bcd_to_dec(b[5]) + acc`. HR17 = `r & 0xFFFF`. **Empirically verified end-to-end.** |
 | 18  | 36-37 | constant `0x389D` (14493) across all 829 captures | High 16 bits of the same hash: `(r >> 16) & 0xFFFF`. An earlier reading called HR17/HR18 a per-device fingerprint. With a clock as the source, HR18 changes only when the low half overflows, about every 18 hours at one step per second, which is why it looks constant over a short capture. |
@@ -65,6 +65,10 @@ The 28 registers (= 56 bytes) decoded at the byte level:
 | 3-15 | (none) | -- | Always zero; not written by any HR-update code path. |
 
 The mask is built by `if (src != 0) hr15 |= (1 << bit)` for each source; HR15 is zero in Ken's capture because all three sources were zero throughout.
+
+**Bit 0 on my battery (September 2026).** My GivEnergy 8.2 kWh battery (BMS firmware 3020) set HR15 to 1 for about an hour during a forced charge, from 62% to 98% SoC. It went back to 0 about a minute after the inverter cut the charge current from about 20.7 A to about 14.8 A, and it was never 1 at 100% SoC. So bit 0 does not mean "SoC = 100%", as the firmware reading above says. Either the writer trace is incomplete or firmware 3020 differs from 3022. I don't know what it does mean yet.
+
+**What the G3 LV DSP does with it.** The D316 DSP clears bit 0 whenever the previous SoC it received was below 100%, so bit 0 during a bulk charge is thrown away. At 100% SoC, bit 0 would cancel the DSP's "battery full" charge block and let a forced charge go past the upper SoC target. My battery sends 0 at 100%, so this never happened in my capture. See [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers).
 
 ### Register 19 Bits
 
@@ -143,6 +147,26 @@ The firmware analysis above was done on BMS firmware v3022. The 90-hour G3 captu
 | 6 | `allow_discharge` | firmware only | Always set. |
 | 7 | `allow_charge_and_discharge` | firmware only | Always set. |
 
+#### Evidence from my G3 capture (September 2026)
+
+My capture of a G3 LV with a GivEnergy 8.2 kWh battery (BMS firmware 3020, see [06-wire-captures.md](06-wire-captures.md#findings-from-my-g3-capture-september-2026)) shows two things the 90-hour capture did not. Bits are 0-indexed, as in the table above.
+
+- **Bit 3 also clears at high cell voltage.** It was clear for two spells at the top of charge, about 17 minutes and about 45 minutes, with SoC at 99% to 100% and the highest cell between 3522 mV and 3594 mV. So `all_cells_ok` covers over-voltage too, not only the under-voltage that the writer trace found.
+- **Bit 5 pulses at full.** It was set for about 4.5 minutes after the last top-up, then for about a minute roughly every 38 minutes, always at 100% SoC. Each pulse started a small discharge, from about -0.15 A to about -2.8 A. This fits Ken's "high briefly at max SOC", and it happened outside a calibration.
+
+**What the G3 LV DSP does with HR19.** From the D316 DSP image:
+
+| Bit (0-idx) | Effect on a G3 LV |
+|---:|---|
+| 0 and 1 | Both clear means the BMS is idle. The DSP then skips its BMS power limits, its "battery full" block and its voltage mismatch check. |
+| 2 | With bit 2 clear, the DSP forces a charge of at least 300 W (not during a calibration). |
+| 3 | None. The DSP never reads it, so the clearing at high cell voltage has no effect. |
+| 4 | Passed to the ARM as a status bit. |
+| 5 | Outside a calibration, the DSP caps its power request at 120 W of discharge. That is the small discharge seen in the capture: the battery asks to come off full, and the G3 obeys. |
+| 6 and 7 | Not checked. |
+
+See [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers).
+
 An earlier hypothesis mapped HR19 onto the PACE `CID2=0x44` pack alarm byte (`PACK_ALARM_BITS` in `tools/pace_reference.py`). The wire data rules this out. Bit 0 would be a cell overvoltage alarm that is set on every discharge poll, bit 1 a cell undervoltage alarm that is almost always set, and bit 3 an undervoltage alarm with the wrong polarity.
 
 ### Register 20 Bits
@@ -204,6 +228,18 @@ The remaining HR20 bits (1/2 from `*(u8*)0x20000279`, 5-8 from `*(u8*)0x2000027A
 All three clearer functions are structurally identical: iterate 8 bits, for each set bit check whether its underlying condition has recovered for 3+ cycles against per-bit thresholds, then clear via `*byte = *byte & ~mask`. **Setters are scattered** -- each fault detector (temperature monitor, voltage threshold checker, etc.) ORs its specific bit into the appropriate byte when triggered, with most "set" paths coming from the AFE chip via PACE protocol frames parsed by `pace_cid2_dispatch`.
 
 This **firmware-side three-byte split (current / temperature / voltage) lines up exactly with the three alarm-category clusters in GivTCP's `battery_fault_code` enum**, which explains why Ken's GivTCP-derived bit labels in the table above are accurate semantic names.
+
+#### Evidence from my G3 capture, and what the G3 LV DSP does
+
+In my capture (G3 LV, BMS firmware 3020) HR20 was 0 all the time except once. It went to 4 (bit 2, over-voltage, 0-indexed) at the end of the last top-up at full charge, and stayed at 4 for 271 s while the pack discharged at about 2.8 A with HR19 bit 5 set. It was clear during every charge, including the top-ups that took HR22 to 57.52 V. GivTCP's battery `warning_1` showed 4 for the same spell.
+
+The D316 DSP acts on bits 2 and 3 (0-indexed):
+
+- **Bit 2**, outside a battery calibration, sets the DSP's charge power limit to zero at once, whatever else asks for charge. After 30 s it also sets the DSP's "battery full" block. During a calibration it only cuts the charge power to 5% of rated power (180 W on a 3.6 kW inverter), and the ARM takes it as the "full" end point of the calibration.
+- **Bit 3** cuts the discharge power limit to 10% of rated power (360 W on a 3.6 kW inverter). During a calibration the ARM takes it as the "empty" end point.
+- The DSP sends the low byte to the ARM. Neither bit raises a DSP fault.
+
+This agrees with the `modbus_proxy` experiments below (0x04 stopped charging, 0x08 limited discharge to about 340 W). See [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers).
 
 ## Field-variation analysis
 
