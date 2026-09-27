@@ -233,6 +233,15 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* Mark the start, so a gap in the log can be told apart from a gap on the bus
+     * (capture_checks.py). Parsers skip it because it isn't a hex line. */
+    {
+        char stamp[64];
+        make_timestamp(stamp, sizeof(stamp), &now);
+        fprintf(log_file, "# %s logger started\n", stamp);
+        fflush(log_file);
+    }
+
     fprintf(stderr, "Logging %s at 9600 baud to %s\n", serial_device, log_template);
     fprintf(stderr, "Press Ctrl+C to stop.\n");
 

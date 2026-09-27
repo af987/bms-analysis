@@ -65,4 +65,31 @@ def test_report_runs_what_it_can_when_columns_are_missing():
     text = report(df)
     assert "HR26 / HR27: skipped, missing hr26_limit_cA, hr27_limit_cA" in text
     assert "End of charge: skipped, missing hr22_pack_voltage_cV" in text
-    assert "Cold boots: 0 found" in text
+    assert "Poll gaps: 0 found" in text
+
+
+# A poll gap is a capture gap if the logger (re)started inside it; otherwise it's an inverter restart.
+
+def _two_gaps():
+    before = [(s, 5.0, 50, 50, 52.0) for s in range(0, 10)]
+    mid = [(600 + s, 5.0, 50, 50, 52.0) for s in range(0, 10)]
+    after = [(1200 + s, 5.0, 50, 50, 52.0) for s in range(0, 10)]
+    return _hr(before + mid + after)
+
+
+def test_logger_starts_are_read_from_the_wire_log(tmp_path):
+    from tools.capture_checks import logger_starts
+    log = tmp_path / "wire.log"
+    log.write_text("# 2026-09-24 12:05:00.000Z logger started\n"
+                   "2026-09-24 12:05:01.000Z  00000000  01 03 00 00 00 1C 44 03  |......D.|\n")
+    assert logger_starts([log]) == [pd.Timestamp("2026-09-24 12:05:00", tz="UTC")]
+
+
+def test_gap_containing_a_logger_start_is_a_capture_gap():
+    boots = cold_boots(_two_gaps(), logger_starts=[T0 + pd.Timedelta(seconds=300)])
+    assert [b["kind"] for b in boots] == ["capture gap", "inverter restart"]
+
+
+def test_gaps_are_unknown_without_logger_markers():
+    boots = cold_boots(_two_gaps())
+    assert [b["kind"] for b in boots] == ["restart or capture gap"] * 2
