@@ -148,7 +148,7 @@ These must be answered before a real Seplos battery is connected to the inverter
 7. **Serial and HR17/HR18.** Does the inverter check the battery serial or the HR17/HR18 values? HR17 turns out to be clock-derived: in the G3 capture it changed once per second, mostly by +1 (see [02-holding-registers.md](02-holding-registers.md)), so the emulator should tick it once per second. dobberzzr's emulator used a GivEnergy-style serial (`DX2319G000`) and was accepted on a Gen 1.
 8. **HR20 alarm mapping.** Which Seplos alarms should set which HR20 bits, and how does the G3 react to each one?
 9. **Inverter current rating.** What battery current does the G3 5 kW draw at full power? The G3 3.6 kW peaked at 76 A discharging and 65 A charging in the 90-hour capture.
-10. **HR26 and HR27 roles on a G3 LV.** The DSP firmware suggests HR26 acts as the discharge limit and HR27 as the charge limit, the opposite of `docs/02`. Test by charging with HR26 and HR27 set to different values and seeing which one the inverter follows.
+10. **HR26 and HR27 roles on a G3 LV.** Settled: a capture from a G3 LV shows HR26 is the charge limit and HR27 the discharge limit, as `docs/02` says (see its G3 LV note). An earlier reading of the DSP firmware suggested the opposite.
 
 ## Test plan
 
