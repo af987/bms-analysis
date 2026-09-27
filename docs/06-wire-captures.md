@@ -165,7 +165,7 @@ The joined parquet file doesn't include HR20, HR21, HR22, HR24, HR26 or HR27, be
 
 ## Findings from my G3 capture (September 2026)
 
-I captured my own Hybrid Gen3 LV (firmware D0.316-A0.316) with its GivEnergy 8.2 kWh battery (BMS firmware 3020) using the Raspberry Pi capture box in [capture-box/](../capture-box/README.md), from 26 to 27 September 2026. The dongle was tapped on the battery's "Batt to Batt" comms terminals, and GivTCP's MQTT output was recorded alongside. The capture covers an evening of discharge, a forced overnight charge to 100%, and the morning at full charge. The inverter setting HR109 `enable_bms_read` was 1, and HR111/HR112 (charge/discharge limit) were both 44.
+I captured my own Hybrid Gen3 LV (firmware D0.316-A0.316) with its GivEnergy 8.2 kWh battery (BMS firmware 3020) using the Raspberry Pi capture box in [capture-box/](../capture-box/README.md), from 17:05 UTC on 26 September to 15:57 UTC on 27 September 2026, about 23 hours. The dongle was tapped on the battery's "Batt to Batt" comms terminals, and GivTCP's MQTT output was recorded alongside. The capture covers an evening of discharge, a forced overnight charge to 100%, the night at full charge, and the next day, when SoC stayed between 83% and 100%. The inverter setting HR109 `enable_bms_read` was 1, and HR111/HR112 (charge/discharge limit) were both 44.
 
 ### Poll cadence and turnaround
 
@@ -194,7 +194,7 @@ Three things follow:
 
 - **HR26 caps charging on a G3 LV.** When the BMS cut HR26 to 3.20 A and left HR27 at 80 A, the charge current dropped to about 2.9 A at once and stayed under HR26, as the labels in [02-holding-registers.md](02-holding-registers.md) say. The G3 LV DSP firmware agrees (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
 - **The inverter tapers the charge itself before the BMS does.** The current held at about 60.5 A (the inverter's 3600 W charge rate at about 54 V) up to 90% SoC, then fell to about 14.6 A over 20 minutes with HR26 and HR27 still at 80 A. An emulator doesn't need to produce this taper; the inverter does it.
-- **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between.
+- **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between. The BMS held HR26 at 3.20 A from before midnight until 04:37 UTC. Then it released it in steps of 10 A every 11 s (13.20 A, 23.20 A and so on up to 73.20 A), and then to 80.00 A.
 
 ### Voltages at the top of the charge
 
@@ -214,7 +214,15 @@ The inverter settings HR98 and HR97 were 58.5 V and 43.2 V all night. The G3's o
 
 ### Discharge
 
-During the evening the battery discharged at up to 69.7 A (about 3.6 kW), from 99% down to 58% SoC, with HR27 at 80 A throughout. The lowest pack voltage was 52.18 V.
+During the evening the battery discharged from 99% down to 58% SoC. Over the whole capture the largest discharge current was 70.45 A (about 3.6 kW), and the lowest pack voltage was 52.11 V. The largest charge current was 61.07 A. HR27 stayed at 80.00 A throughout.
+
+### No writes to the battery
+
+The capture holds 478,645 frames with no framing errors. The inverter sent only FC=3 and FC=4: 233,594 HR polls and 5,729 IR polls. There was no FC=6 write at all in 23 hours. So in normal running a G3 LV doesn't write to the battery. The DSP has FC=6 write paths on counters (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)), but their conditions didn't occur here.
+
+### Status bits
+
+Once the battery had started up, HR19 took only four values: `0xCF`, `0xCE`, `0xC7` and `0xEF`. `0xC7` is bit 3 clear at high cell voltage, and `0xEF` is bit 5 set at full charge (see [02-holding-registers.md](02-holding-registers.md#evidence-from-my-g3-capture-september-2026)). HR20 was either 0 or `0x0004` (bit 2, over-voltage), as after the last top-up described above.
 
 ### Gaps in this capture
 

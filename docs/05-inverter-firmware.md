@@ -159,7 +159,7 @@ Analysis in 2026-09 of A316 with its DSP image D316 shows that the ARM and DSP s
 - **The DSP is the Modbus master.** Every frame on the BMS bus comes from the DSP, and all of them are addressed to device 1:
   - The FC=3 HR poll every 240 ms: either HR0 to HR27 (start 0, count 28) or HR17 to HR25 only (start 17, count 9). The ARM chooses which (see the table below).
   - The FC=4 IR reads that the ARM asks for, with the count capped at 26.
-  - FC=6 writes to BMS registers 1 to 4, sent on counters between polls.
+  - FC=6 writes to BMS registers 1 to 4, sent on counters between polls. My 23-hour capture had none: the G3 sent only FC=3 and FC=4 (see [06-wire-captures.md](06-wire-captures.md#no-writes-to-the-battery)), so the conditions for these writes didn't occur in normal running.
 - **Reply check.** The DSP accepts a reply only when its length matches the request and its CRC is correct. See [Reply acceptance](#reply-acceptance) below.
 - **Presence.** The first valid reply marks the BMS present and clears the comms fault. The DSP reports this to the ARM, which marks the battery connected as soon as it sees it and logs what looks like a "battery connected" event. Neither chip has a multi-reply debounce, unlike the 7-reply debounce reported for a Gen 1 inverter. When the DSP reports the battery lost, the ARM marks it disconnected and logs what looks like a "battery lost" event.
 - **BMS lost.** The BMS link task runs every 40 ms and counts ticks since the last valid reply. After 750 ticks (about 30 seconds) it zeroes the charge and discharge current limits and the SoC it holds, and sets the comms fault. The next valid HR reply clears the fault.
@@ -260,7 +260,7 @@ With all three fixed, I re-checked the voltage checks, the current tapers, the b
 
 Confirmed across all surveyed firmwares and Ken's wire captures:
 
-- **No FC=06 writes during normal polling** - read-only steady-state operation
+- **No FC=06 writes during normal polling** - read-only steady-state operation. My G3 LV sent none in 23 hours.
 - **No FC=10** (write multiple) builders found in any inverter firmware
 - **No FC=23** (read/write multiple) builders found
 - **No startup probe / handshake** - the inverter just begins polling device 1 with the standard HR query immediately after boot
