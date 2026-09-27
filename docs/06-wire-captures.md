@@ -192,7 +192,7 @@ The battery reported HR25 = 90.00 A and HR26 = HR27 = 80.00 A throughout, except
 
 Three things follow:
 
-- **HR26 caps charging on a G3 LV.** When the BMS cut HR26 to 3.20 A and left HR27 at 80 A, the charge current dropped to about 2.9 A at once and stayed under HR26, as the labels in [02-holding-registers.md](02-holding-registers.md) say. Whether a lower HR27 would also limit charging (the DSP tapers the HR27 value at high voltage) is still untested.
+- **HR26 caps charging on a G3 LV.** When the BMS cut HR26 to 3.20 A and left HR27 at 80 A, the charge current dropped to about 2.9 A at once and stayed under HR26, as the labels in [02-holding-registers.md](02-holding-registers.md) say. The G3 LV DSP firmware agrees (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
 - **The inverter tapers the charge itself before the BMS does.** The current held at about 60.5 A (the inverter's 3600 W charge rate at about 54 V) up to 90% SoC, then fell to about 14.6 A over 20 minutes with HR26 and HR27 still at 80 A. An emulator doesn't need to produce this taper; the inverter does it.
 - **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between.
 
