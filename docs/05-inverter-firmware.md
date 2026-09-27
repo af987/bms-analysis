@@ -160,12 +160,71 @@ Analysis in 2026-09 of A316 with its DSP image D316 shows that the ARM and DSP s
   - The FC=3 HR poll every 240 ms: either HR0 to HR27 (start 0, count 28) or HR17 to HR25 only (start 17, count 9). The ARM chooses which (see the table below).
   - The FC=4 IR reads that the ARM asks for, with the count capped at 26.
   - FC=6 writes to BMS registers 1 to 4, sent on counters between polls.
-- **Reply check.** The DSP accepts a reply only when its length matches the function code and its CRC is correct.
+- **Reply check.** The DSP accepts a reply only when its length matches the request and its CRC is correct. See [Reply acceptance](#reply-acceptance) below.
 - **Presence.** The first valid reply marks the BMS present and clears the comms fault. The DSP reports this to the ARM, which marks the battery connected as soon as it sees it and logs what looks like a "battery connected" event. Neither chip has a multi-reply debounce, unlike the 7-reply debounce reported for a Gen 1 inverter. When the DSP reports the battery lost, the ARM marks it disconnected and logs what looks like a "battery lost" event.
-- **BMS lost.** After about 30 seconds without a valid reply, the DSP zeroes the charge and discharge current limits and the SoC it holds, and sets the comms fault.
-- **Current limits.** If HR13 (BMS firmware version) is 3011 or higher, the DSP takes its charge limit from HR26 and its discharge limit from HR27. Below 3011, it takes both from HR25. In one mode it raises both limits to at least 8.00 A. It scales the charge limit (HR26) down as the battery voltage falls from 48.0 V to 44.0 V, and the discharge limit (HR27) down as the voltage rises from 54.5 V to about 58.0 V. The tapered limits become the positive (charge) and negative (discharge) bounds of the battery power. A capture from my G3 agrees: the charge current followed HR26 at the top of a charge (see the G3 LV note in [02-holding-registers.md](02-holding-registers.md)). An earlier version of this page read the tapers the other way round, because my table of the ARM's settings had the two cap values swapped.
-- **SoC floor.** The DSP holds a SoC floor that defaults to 4%, the floor seen in wire captures. In one mode it clamps the BMS SoC to between the floor plus 1% and 99%.
-- **Battery voltage.** The DSP measures the battery voltage itself. It uses a fixed maximum of 56.0 V and minimum of 42.0 V, raises an over-voltage fault at 1.0 V or 2.0 V above the maximum, and raises a mismatch fault if its measurement and HR22 differ by more than 5.0 V at low current. No charge voltage taken from BMS data was found.
+- **BMS lost.** The BMS link task runs every 40 ms and counts ticks since the last valid reply. After 750 ticks (about 30 seconds) it zeroes the charge and discharge current limits and the SoC it holds, and sets the comms fault. The next valid HR reply clears the fault.
+- **Current limits.** If HR13 (BMS firmware version) is 3011 or higher, the DSP takes its charge limit from HR26 and its discharge limit from HR27. Below 3011, it takes both from HR25. During a battery calibration it raises both limits to at least 8.00 A. It scales the charge limit (HR26) down as the battery voltage falls from 48.0 V to 44.0 V, to 10% at 44.0 V and below, and the discharge limit (HR27) down as the voltage rises from 54.5 V to about 58.0 V, to 10% at 58.0 V and above. After the taper the HR26 path never goes below 1.00 A and the HR27 path never below 2.00 A, so HR26 = 0 on its own still lets about 1 A through (see [HR26 = 0 is not a hard stop](#what-the-dsp-does-with-the-bms-status-registers)). The tapered limits become the positive (charge) and negative (discharge) bounds of the battery power. A capture from my G3 agrees: the charge current followed HR26 at the top of a charge (see the G3 LV note in [02-holding-registers.md](02-holding-registers.md)). An earlier version of this page read the tapers the other way round, because my table of the ARM's settings had the two cap values swapped.
+- **Charge taper by SoC.** In BMS mode the DSP also limits the charge power by SoC: full rated power (3.6 kW on my inverter) up to 90% SoC, then down by 9.5% of it for each 1% of SoC, to 24% (864 W on mine) at 98% and above. This is the inverter's own taper seen in my capture, where the charge current fell from 60.5 A to 14.6 A between 90% and 98% SoC with both BMS limits at 80 A (24% of 60.5 A is 14.5 A). During a calibration the step is 7.5% per 1% of SoC, down to 25% at 100%.
+- **SoC floor.** The DSP holds a SoC floor that defaults to 4%, the floor seen in wire captures. The ARM sets it from HR110 (see the table below). After 5 s at or below the floor the DSP blocks discharge, until the SoC is back at the floor plus 4%. After 5 s at or below the floor minus 3% it forces a charge of at least 300 W, until the SoC is back at the floor plus 1%. A floor below 5% counts as 4% here, so with the default the forced charge starts at 1%. During a calibration it clamps the BMS SoC to between the floor plus 1% and 99%, and neither block runs.
+- **Battery voltage.** The DSP measures the battery voltage itself. Its maximum and minimum are not fixed. The ARM sends them from the inverter settings HR98 `battery_high_voltage_protection_limit` (maximum) and HR97 `battery_low_voltage_protection_limit` (minimum), clamped to 54.0 V to 63.0 V and 20.0 V to 48.0 V. On my inverter HR98 is 58.5 V and HR97 is 43.2 V, so the maximum is 58.5 V and the minimum 43.2 V. The DSP's own defaults of 56.0 V and 42.0 V only hold from boot until the first settings frame from the ARM. During a battery calibration the maximum is raised by 5% (61.4 V on mine) and the minimum lowered to 86%. No charge voltage taken from BMS data was found. See [Battery voltage checks](#battery-voltage-checks) for the thresholds and what a trip does.
+
+**Correction (27 September 2026).** An earlier version of this page said the DSP used a fixed maximum of 56.0 V and minimum of 42.0 V, which put the over-voltage trip at 57.0 V and 58.0 V. Those are only the boot defaults. On my inverter the trip is at 59.5 V and 60.5 V, from HR98 = 58.5 V. My capture agrees: the inverter read above 57.0 V for minutes during three top-ups, up to 57.61 V, and raised no fault.
+
+#### Battery voltage checks
+
+The DSP's control task runs every 20 ms. Its tick is a 1 ms timer interrupt and the task's period is 20 ticks. The BMS link task runs every 40 ms and sends a poll every 6th tick, which gives the 240 ms HR poll seen on the wire, so the 1 ms tick is confirmed two ways. Each voltage check below is one pass of the control task, so 50 checks are 1 s and 500 checks are 10 s.
+
+With my settings (HR98 = 58.5 V, HR97 = 43.2 V):
+
+| Check | Sets when | Clears when |
+|---|---|---|
+| Over-voltage | above the maximum + 1.0 V (59.5 V) for 50 checks (1 s), or above the maximum + 2.0 V (60.5 V) for 2 checks (40 ms) | 500 checks (10 s) below the maximum (58.5 V) |
+| Under-voltage | below the minimum (43.2 V) for 5 checks (100 ms), unless the BMS is idle | 150 checks (3 s) above the minimum + 2.0 V (45.2 V) |
+| Mismatch with HR22 | the DSP's reading and HR22 differ by more than 5.0 V for 5 checks, with the BMS active, HR22 non-zero and HR23 below 2.00 A. A reading below 24.0 V sets it at once | 500 checks (10 s) with the difference below 3.0 V |
+| Start permit | HR22 above the minimum - 2.0 V (41.2 V) for 500 checks (10 s), with the BMS active. The converter only starts while this is given | at once, when HR22 is at or below that or the BMS is idle |
+
+The over-voltage counts are totals, not runs in a row. Nothing resets a counter until it reaches its limit, so the rule is "more than 59.5 V for 1 s in total, or more than 60.5 V for 40 ms in total", counted since the last trip or since boot. The release counter also runs whenever the reading is below the maximum, so after a trip the fault can clear after anything from 20 ms to 10 s below 58.5 V. Outside BMS mode the maximum is a fixed 56.0 V.
+
+The over-voltage check has no gate that I could find. It runs whether the battery is charging, discharging or idle, and it doesn't look at HR19, HR20, HR26 or SoC. Its only inputs are the DSP's own voltage reading, the maximum and BMS mode. The DSP's reading is what the inverter publishes as IR 50 `v_battery` (GivTCP's battery voltage), unchanged. On my system it reads 0.2 V to 0.3 V above HR22 at rest and about 1.3 V above it at 60 A.
+
+What an over-voltage trip does:
+
+- A fault check in the fast interrupt code switches the battery converter off, in both directions, while the fault is set. The power request goes to zero.
+- It doesn't latch. When the fault clears, the converter soft-starts again by itself, at once if the DC bus is above 220 V and after 120 s if not.
+- The inverter stays in its operating state and carries on without the battery. I found no relay write on this path.
+- The DSP reports the fault to the ARM. During a calibration the ARM treats it as "battery full". Whether the app shows a fault outside a calibration is still open.
+
+Because the maximum comes from HR98, anything that lowers HR98 lowers the trip. At HR98 = 56.0 V the trip is back at 57.0 V and 58.0 V.
+
+#### Reply acceptance
+
+I ran the DSP's own receive and parse code in Ghidra's emulator on real replies from my battery and on built ones:
+
+- Byte 0 (the device) must be 0 to 15, and byte 1 (the FC) must be 3 or 4. Anything else is dropped. An FC=6 echo is ignored, so the DSP neither needs nor minds it.
+- The expected length comes from the request, not from the reply's byte count field: `count * 2 + 5` bytes for FC=3, and `(count + 3) * 2` for FC=4 (the non-standard FC=4 framing). When that many bytes have arrived, the DSP checks the CRC. The FC=3 byte count field is never checked.
+- A short reply never reaches the expected length and is dropped at the next poll. A long one fails the CRC. A valid reply followed by a stray byte is accepted.
+- The DSP doesn't parse FC=4 replies. It copies them to the ARM, which parses them.
+
+#### What the DSP does with the BMS status registers
+
+These readers are from the D316 DSP image. The ones marked "run" I also ran in the emulator. Bits are 0-indexed.
+
+| Register | What the DSP does |
+|---|---|
+| HR19 bits 0 and 1 | Both clear means the BMS is idle. The DSP then skips its BMS power limits, the "battery full" block and the voltage mismatch check. |
+| HR19 bit 2 | In BMS mode, with bit 2 clear, the DSP raises the power request to at least 300 W of charge (run). My battery always sets it. It has no effect during a calibration. |
+| HR19 bit 3 | Nothing. The DSP never reads it. My battery clears it at high cell voltage (see [02](02-holding-registers.md#register-19-bits)), and that has no effect on a G3. |
+| HR19 bit 4 | Copied to a status bit sent to the ARM. |
+| HR19 bit 5 | Outside a calibration, the DSP caps the power request at 120 W of discharge (run: requests of +200 W, 0 W and -50 W all become -120 W). So the inverter discharges a little. My battery pulses this bit at full charge, and in my capture each pulse started a discharge of about 2.8 A. |
+| HR15 bit 0 | At 100% SoC it cancels the "battery full" block, and in forced charge it lets charging go past the upper SoC target. The DSP clears the bit whenever the previous SoC it received was below 100% (run), so below 100% it has no effect. |
+| HR11 | After 50 full-poll replies, it replaces the capacity the DSP uses for the HR111/HR112 current caps (capacity x percentage + 1.5 A) and for the forced charge and discharge power. With the caps at 100% these are far above normal limits, so it matters mainly with reduced HR111/HR112 or in forced charge and discharge. |
+| HR20 low byte | Sent to the ARM with every frame. |
+| HR20 bit 2 | Outside a calibration, the charge power limit becomes zero at once (run), whatever the power request, including forced charge. After 30 s (1500 checks) the DSP also sets its "battery full" block, which clears 5 s after the cause is gone once SoC is below 99%. It raises no DSP fault. |
+| HR20 bit 3 | The discharge power limit drops to 10% of rated power (360 W on a 3.6 kW inverter), in and out of a calibration (run). This is close to the 340 W that Ken saw when setting HR20 to 0x08 with `modbus_proxy` (see [02](02-holding-registers.md#inline-protocol-modification)). |
+
+**HR26 = 0 is not a hard stop.** The HR26 path never goes below 1.00 A, so HR26 = 0 on its own leaves a charge bound of about 1 A (about 53 W at 53 V) until the "battery full" block sets after 30 s. HR20 bit 2 gives a zero charge limit at once. HR27 = 0 likewise leaves about 2 A of discharge. HR20 bit 3 alone leaves 360 W. The hard stop at empty is the SoC floor block.
+
+**HR20 bit 2 during a calibration.** While a battery calibration runs (HR29 non-zero), the DSP raises HR26 and HR27 to at least 8.00 A and never sets the "battery full" block. HR20 bit 2 then cuts the charge power limit to 5% of rated power instead of zero: 180 W on a 3.6 kW inverter, about 3.4 A at 53 V. That overrides the 8 A minimum, but it doesn't stop charging. On the ARM side, HR20 bit 3 and bit 2 (or a DSP over-voltage trip) are the "empty" and "full" end points of the calibration. I read the ARM part from the disassembly and didn't run it.
 
 #### Inverter settings that change the BMS link
 
@@ -178,12 +237,24 @@ The ARM passes some of its own settings to the DSP in the UART4 frames. I traced
 | SoC floor | HR110 `battery_soc_reserve`, replaced by a per-slot value inside timed slots |
 | Cap on the charge limit (HR26) | HR111 `battery_charge_limit` |
 | Cap on the discharge limit (HR27) | HR112 `battery_discharge_limit` |
+| Battery maximum voltage, for the over-voltage check | HR98 `battery_high_voltage_protection_limit`, 58.5 V on my inverter |
+| Battery minimum voltage, for the under-voltage check and start permit | HR97 `battery_low_voltage_protection_limit`, 43.2 V on my inverter |
 
-I checked the last two rows by running the DSP's limit code in Ghidra's emulator with one cap lowered at a time: each setting caps exactly one of the two limits. The DSP's forced charge and discharge code confirms which is which: it uses the HR111 value for a positive power limit that stops at the upper SoC target, and the HR112 value for a negative one that stops at the SoC floor.
+I checked the HR111 and HR112 rows by running the DSP's limit code in Ghidra's emulator with one cap lowered at a time: each setting caps exactly one of the two limits. The DSP's forced charge and discharge code confirms which is which: it uses the HR111 value for a positive power limit that stops at the upper SoC target, and the HR112 value for a negative one that stops at the SoC floor. I also ran the ARM settings handler for the HR98 and HR97 rows: 58.5 V and 43.2 V give a maximum of 58.5 V and a minimum of 43.2 V, and 64.0 V and 50.0 V are clamped to 63.0 V and 48.0 V.
 
-For a battery emulator, leave HR109 at 1. Otherwise the emulator also has to answer the short HR17 to HR25 poll.
+For a battery emulator, leave HR109 at 1. Otherwise the emulator also has to answer the short HR17 to HR25 poll, and there is a worse problem. The DSP only reads HR13 in the full poll. If it starts in short-poll mode, HR13 reads as 0 and it takes both limits from HR25. But if HR109 changes from 1 to anything else while the inverter runs, the DSP keeps the HR13 it saw and goes on reading HR26 and HR27 at their full-poll positions, past the end of the 23-byte short reply. In the emulator it got 368.86 A for charge (from the reply's CRC bytes) and 655.35 A for discharge (`0xFFFF` left over from an earlier full reply). That is a firmware fault, and HR109 = 1 avoids it.
 
 These results come from firmware analysis and an emulation of the ARM side. A first capture from my G3 (September 2026) confirms the full HR poll every 240 ms and the IR sweep, and shows HR26 is the charge limit. The rest has not been checked on the wire yet.
+
+#### Note on the emulator used (27 September 2026)
+
+I checked most figures on this page by running DSP code in Ghidra with the unofficial C28x processor module [outlandnish/ghidra-tms320c28x](https://github.com/outlandnish/ghidra-tms320c28x). That module had three instruction bugs, which I have reported upstream:
+
+- `SUBF32` with an immediate operand subtracted the wrong way round ([#138](https://github.com/outlandnish/ghidra-tms320c28x/issues/138)). The taper figures above were already run with this one fixed.
+- `ADDB AX,#8bit` zero-extended its constant where the C28x sign-extends it ([#142](https://github.com/outlandnish/ghidra-tms320c28x/issues/142)). The compiler writes `x - 2` as `ADDB AL,#-2`, so the emulated DSP ran every Modbus CRC over the wrong length and rejected every reply, and some thresholds read wrongly.
+- `ADD loc16,#16bitSigned` set no flags ([#144](https://github.com/outlandnish/ghidra-tms320c28x/issues/144)). The DSP's float divide branches on those flags, so every division came out wrong.
+
+With all three fixed, I re-checked the voltage checks, the current tapers, the battery-lost timeout and the ARM settings table. None of the figures published before changed. The SoC charge taper, the SoC floor blocks, the start permit and the reply acceptance could only be read correctly with the fixes, and are new here. The change to the voltage limits above came from a separate finding (the ARM's HR98/HR97 handler), not from the fixes.
 
 ## What's NOT done in the steady-state poll cycle
 
