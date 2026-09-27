@@ -49,7 +49,7 @@ def load_wire_records(wire_path: Path, wire_tz: str | None = None) -> pd.DataFra
 def load_tcp_records(tcp_path: Path) -> pd.DataFrame:
     """Decode tcp.ndjson into a DataFrame, one row per poll, columns prefixed tcp_."""
     rows = []
-    with open(tcp_path) as f:
+    with parse_log.open_capture(tcp_path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -62,13 +62,29 @@ def load_tcp_records(tcp_path: Path) -> pd.DataFrame:
             for k, v in rec.get("fields", {}).items():
                 row[f"tcp_{k}"] = v
             rows.append(row)
-    return pd.DataFrame(rows)
+    return _coerce_mixed_columns(pd.DataFrame(rows))
+
+
+def _coerce_mixed_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Make columns that mix numbers and text numeric, with the text as NaN.
+
+    A numeric topic that sometimes publishes a word like "unknown" would
+    otherwise leave an object column that to_parquet cannot write.
+    """
+    for col in df.columns:
+        if col == "ts" or df[col].dtype != object:
+            continue
+        values = df[col].dropna()
+        is_num = values.map(lambda v: isinstance(v, (int, float)) and not isinstance(v, bool))
+        if is_num.any() and not is_num.all():
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 def load_tag_records(tags_path: Path) -> pd.DataFrame:
     """Decode tags.ndjson into a DataFrame of sparse events."""
     rows = []
-    with open(tags_path) as f:
+    with parse_log.open_capture(tags_path) as f:
         for line in f:
             line = line.strip()
             if not line:
