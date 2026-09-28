@@ -165,7 +165,7 @@ The joined parquet file doesn't include HR20, HR21, HR22, HR24, HR26 or HR27, be
 
 ## Findings from my G3 capture (September 2026)
 
-I captured my own Hybrid Gen3 LV (firmware D0.316-A0.316) with its GivEnergy 8.2 kWh battery (BMS firmware 3020) using the Raspberry Pi capture box in [capture-box/](../capture-box/README.md), from 26 to 27 September 2026. The dongle was tapped on the battery's "Batt to Batt" comms terminals, and GivTCP's MQTT output was recorded alongside. The capture covers an evening of discharge, a forced overnight charge to 100%, and the morning at full charge. The inverter setting HR109 `enable_bms_read` was 1, and HR111/HR112 (charge/discharge limit) were both 44.
+I captured my own Hybrid Gen3 LV (firmware D0.316-A0.316) with its GivEnergy 8.2 kWh battery (BMS firmware 3020) using the Raspberry Pi capture box in [capture-box/](../capture-box/README.md), from 17:05 UTC on 26 September to 15:57 UTC on 27 September 2026, about 23 hours. The dongle was tapped on the battery's "Batt to Batt" comms terminals, and GivTCP's MQTT output was recorded alongside. The capture covers an evening of discharge, a forced overnight charge to 100%, the night at full charge, and the next day, when SoC stayed between 83% and 100%. The inverter setting HR109 `enable_bms_read` was 1, and HR111/HR112 (charge/discharge limit) were both 44.
 
 ### Poll cadence and turnaround
 
@@ -194,15 +194,35 @@ Three things follow:
 
 - **HR26 caps charging on a G3 LV.** When the BMS cut HR26 to 3.20 A and left HR27 at 80 A, the charge current dropped to about 2.9 A at once and stayed under HR26, as the labels in [02-holding-registers.md](02-holding-registers.md) say. The G3 LV DSP firmware agrees (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
 - **The inverter tapers the charge itself before the BMS does.** The current held at about 60.5 A (the inverter's 3600 W charge rate at about 54 V) up to 90% SoC, then fell to about 14.6 A over 20 minutes with HR26 and HR27 still at 80 A. An emulator doesn't need to produce this taper; the inverter does it.
-- **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between.
+- **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between. The BMS held HR26 at 3.20 A from before midnight until 04:37 UTC. Then it released it in steps of 10 A every 11 s (13.20 A, 23.20 A and so on up to 73.20 A), and then to 80.00 A.
 
 ### Voltages at the top of the charge
 
 The inverter's own battery voltage reading (GivTCP) was 0.2 V to 0.3 V above HR22 at rest and about 1.3 V above it at 60 A, the drop in the battery cable. At 100% the pack sat at about 56.1 V to 56.6 V (median 56.13 V by HR22). The 3 A top-ups briefly took HR22 to 57.53 V and the inverter's reading to 57.61 V, with no fault raised.
 
+There were three top-ups after the main charge:
+
+| Top-up (UTC) | Charge current | HR22 | Inverter's reading | HR20 while charging |
+|---|---|---|---|---|
+| 23:38 to 23:43, end of the main charge | 14.7 A down to 2.8 A | 55.39 V to 57.06 V | up to 57.37 V, above 57.0 V for about 3 minutes | 0 |
+| 00:35 to 00:37 | 2.9 A | 56.13 V to 57.13 V | up to 57.35 V, above 57.0 V for about 2.5 minutes | 0 |
+| 01:21 to 01:22 | 2.9 A | 56.66 V to 57.52 V | up to 57.61 V, above 57.0 V for about 2 minutes | 0 |
+
+HR20 bit 2 (over-voltage) was clear during every charge. It was set only when the last top-up ended, at the 57.52 V peak of HR22, and it stayed set for 271 s while the pack discharged at about 2.8 A (HR19 bit 5, see [02-holding-registers.md](02-holding-registers.md#evidence-from-my-g3-capture-september-2026)). HR22 fell from its peak and was above 57.0 V for only about 70 s of that time.
+
+The inverter settings HR98 and HR97 were 58.5 V and 43.2 V all night. The G3's over-voltage trip comes from HR98 and is at 59.5 V for 1 s on the inverter's own reading (see [05-inverter-firmware.md](05-inverter-firmware.md#battery-voltage-checks)), so readings up to 57.61 V for minutes with no fault are what the firmware predicts. The inverter's status stayed normal all night.
+
 ### Discharge
 
-During the evening the battery discharged at up to 69.7 A (about 3.6 kW), from 99% down to 58% SoC, with HR27 at 80 A throughout. The lowest pack voltage was 52.18 V.
+During the evening the battery discharged from 99% down to 58% SoC. Over the whole capture the largest discharge current was 70.45 A (about 3.6 kW), and the lowest pack voltage was 52.11 V. The largest charge current was 61.07 A. HR27 stayed at 80.00 A throughout.
+
+### No writes to the battery
+
+The capture holds 478,645 frames with no framing errors. The inverter sent only FC=3 and FC=4: 233,594 HR polls and 5,729 IR polls. There was no FC=6 write at all in 23 hours. So in normal running a G3 LV doesn't write to the battery. The DSP has FC=6 write paths on counters (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)), but their conditions didn't occur here.
+
+### Status bits
+
+Once the battery had started up, HR19 took only four values: `0xCF`, `0xCE`, `0xC7` and `0xEF`. `0xC7` is bit 3 clear at high cell voltage, and `0xEF` is bit 5 set at full charge (see [02-holding-registers.md](02-holding-registers.md#evidence-from-my-g3-capture-september-2026)). HR20 was either 0 or `0x0004` (bit 2, over-voltage), as after the last top-up described above.
 
 ### Gaps in this capture
 
