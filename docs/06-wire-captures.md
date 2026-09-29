@@ -228,6 +228,35 @@ Once the battery had started up, HR19 took only four values: `0xCF`, `0xCE`, `0x
 
 The poll gaps in this capture were the capture box being off or restarting, not the inverter. The first box's Wi-Fi also dropped several times (see the capture-box README), which didn't affect the wire log. From 27 September the logger writes a start marker, so `tools/capture_checks.py` can tell capture gaps from inverter restarts.
 
+### Discharge to the reserve and a full charge (27-29 September)
+
+I ran a further capture on my G3 LV from 27 to 29 September 2026, over two million frames with no framing errors, covering a slow discharge to the reserve, a forced discharge to the reserve, and a full charge back up from there. The battery is the same GivEnergy 8.2 kWh Gen 1 pack (BMS firmware 3020).
+
+GivEnergy's own retired-product figures for this pack give a true capacity of 10.24 kWh / 200 Ah, a usable capacity of 8.192 kWh / 160 Ah ("100% DoD"), 51.2 V nominal, and a maximum of 85 A / 4.096 kW. HR11 reports 160 Ah on my battery. Block 2's calibrated capacity had fallen to 147.66 Ah after 740 cycles.
+
+**Discharge to the reserve.** Two runs reached the floor:
+
+- 27 September, a slow evening discharge under about 7 A: HR21 reached 5% at 22:30 UTC. Pack voltage 50.73 V, lowest cell 3.167 V, cell spread about 10 mV.
+- 28 September, a forced discharge at about 71 A: HR21 reached 4% at 21:29:01 UTC, and the inverter stopped within about a second of that reading (current stepping -71 A, -22.6 A, -0.2 A). Under 71 A at 5%, just before the stop, the pack had sagged to 49.41 V and the lowest cell to 3.087 V. At rest afterwards the pack recovered to 50.9-51.0 V and the cells to 3.18-3.19 V, still on the LFP plateau. That's a hidden buffer below the inverter's "0%", consistent with 160 Ah usable out of a true 200 Ah.
+
+At the floor the BMS didn't soften anything: HR27 (discharge limit) stayed at 80.00 A all the way to 4%, HR20 stayed 0, and HR19 bit 3 never cleared, unlike the 90-hour G3 capture above, where bit 3 flickered at the floor. On mine, HR19 just toggled between `0xCF` and `0xCE` with the sign of the near-zero current (bit 0). The battery held at 4% for 61 minutes, within 0.1 A throughout, and SoC never went below 4%, so the DSP's floor force-charge (see [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers)) never triggered.
+
+**A full charge from the reserve.** The off-peak charge started at 28 September 22:30:12 UTC (23:30 BST) from 4% SoC and 51.09 V, straight to about 61 A with no ramp:
+
+| SoC | Charge current | Notes |
+|---|---|---|
+| 4% to 91% | steady ~60.5 A | about 2 h 5 min; roughly 1% per 88 s, which is 1.6 Ah per % of 160 Ah |
+| 91% to 97% | 59.8, 54.4, 48.9, 43.1, 37.6, 31.7, 25.9 A | the inverter's own taper, about -5.8 A per %, with HR26 still at 80 A |
+| 98% (00:52 UTC) | cut to 8.00 A | cells jumped from about 3.43 V to 3.52-3.59 V, pack 56.62 V; BMS cuts HR26 |
+| 99% | cut to 3.20 A | pack 57.40 V, highest cell 3.590 V, top spread 68 mV (against about 10 mV at the bottom) |
+| 100% (00:58:18 UTC) | about -3.2 A | BMS sets HR20 = `0x0004` and HR19 = `0xEF` (bit 5); the DSP forces a small discharge |
+
+That knee, and the HR19 bit 5 / HR20 bit 2 behaviour at full charge, match the September top-up findings above and the firmware analysis in [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus). HR26 later released back to 80 A in +10 A steps, as in the earlier capture.
+
+No FC=6 write appeared anywhere in this capture either.
+
+See [07-emulator-implications.md](07-emulator-implications.md) for what the reserve behaviour and the hidden buffer mean for an emulator.
+
 ## Capture experiments worth running
 
 To resolve remaining open questions, useful targeted captures would be:
