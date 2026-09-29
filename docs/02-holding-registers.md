@@ -149,10 +149,11 @@ The firmware analysis above was done on BMS firmware v3022. The 90-hour G3 captu
 
 #### Evidence from my G3 capture (September 2026)
 
-My capture of a G3 LV with a GivEnergy 8.2 kWh battery (BMS firmware 3020, see [06-wire-captures.md](06-wire-captures.md#findings-from-my-g3-capture-september-2026)) shows two things the 90-hour capture did not. Bits are 0-indexed, as in the table above.
+My capture of a G3 LV with a GivEnergy 8.2 kWh battery (BMS firmware 3020, see [06-wire-captures.md](06-wire-captures.md#findings-from-my-g3-capture-september-2026)) shows some things the 90-hour capture did not. Bits are 0-indexed, as in the table above.
 
 - **Bit 3 also clears at high cell voltage.** It was clear for two spells at the top of charge, about 17 minutes and about 45 minutes, with SoC at 99% to 100% and the highest cell between 3522 mV and 3594 mV. So `all_cells_ok` covers over-voltage too, not only the under-voltage that the writer trace found.
 - **Bit 5 pulses at full.** It was set for about 4.5 minutes after the last top-up, then for about a minute roughly every 38 minutes, always at 100% SoC. Each pulse started a small discharge, from about -0.15 A to about -2.8 A. This fits Ken's "high briefly at max SOC", and it happened outside a calibration.
+- **Bit 3 didn't flicker at the reserve.** In a later capture (27-29 September 2026) my battery held at the 4% floor for 61 minutes with HR19 only toggling `0xCF`/`0xCE` on the sign of the near-zero current (bit 0); bit 3 stayed set throughout. The 90-hour capture above saw the equivalent bit flicker at the floor - mine didn't. See [06-wire-captures.md](06-wire-captures.md#discharge-to-the-reserve-and-a-full-charge-27-29-september).
 
 **What the G3 LV DSP does with HR19.** From the D316 DSP image:
 
