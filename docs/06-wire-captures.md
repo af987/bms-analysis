@@ -257,6 +257,29 @@ No FC=6 write appeared anywhere in this capture either.
 
 See [07-emulator-implications.md](07-emulator-implications.md) for what the reserve behaviour and the hidden buffer mean for an emulator.
 
+### A solar charge to full and the trickle release (29 September)
+
+The same capture ran on into 29 September, 07:23 to 20:05 UTC, 602,677 frames with no framing errors and no FC=6 write. This stretch covers a charge from solar rather than a forced charge, and what happens after the BMS cuts the current at the top.
+
+Solar current varies with the sun, up to 51.6 A on my system that day. At 98% SoC the BMS cut HR26 the same way it did during the forced charge on 28-29 September: 80.00 A, then 32.00 A, then 8.00 A, then 3.20 A, all within 2.5 minutes (12:24:26, 12:25:20 and 12:27:01 UTC), as the highest cell passed about 3.47-3.50 V. So the cut follows the highest cell, not how the charge is driven.
+
+At 100% HR20 bit 2 and HR19 bit 5 pulsed 976 and 975 times that day, about 16 minutes in total, each pulse matching the DSP's small forced discharge of about -3.2 A, as in the earlier capture. At rest at 100% the highest cell sat at 3.46-3.49 V for about 2.5 hours (lowest cell 3.43-3.45 V), and the spread at the knee reached 79 mV, against 68 mV the night before.
+
+**The trickle release.** The BMS held HR26 at 3.20 A for 2 hours 40 minutes, from 12:27 to 15:07 UTC, then released it at 15:07:43 in steps of +10 A about every 11 seconds back up to 80.00 A. The release came just after the pack started discharging and the highest cell fell through about 3.40 V:
+
+| Time (UTC) | Highest cell | Pack current | HR26 |
+|---|---|---|---|
+| 14:53 | 3.480 V | at rest | 3.20 A |
+| 15:03 | 3.432 V | -5 to -8 A | 3.20 A |
+| 15:06 | 3.404 V | -5 to -8 A | 3.20 A |
+| 15:07:43 | below 3.40 V | -5 to -8 A | releases: 13.20, 23.20, ... 80.00 A |
+
+On the early-morning full charge from the reserve (29 September), the same hold lasted longer: 3 hours 43 minutes at 3.20 A before release. Different hold times, same trigger: the release follows the pack coming off the top and the highest cell falling to about 3.40 V, not a fixed timer.
+
+HR15 bit 0 was set again during this solar charge, for 26,297 polls, and clear the rest of the day, matching the earlier correction that bit 0 marks charging, not 100% SoC (see [02-holding-registers.md](02-holding-registers.md#register-15-bits)).
+
+Other ranges that day: SoC 46% to 100%, discharge current up to 71.2 A, pack voltage (HR22) 51.57 V to 57.50 V, battery temperature (HR24) 23 to 27 degC.
+
 ## Capture experiments worth running
 
 To resolve remaining open questions, useful targeted captures would be:
