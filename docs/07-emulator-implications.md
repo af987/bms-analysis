@@ -48,7 +48,7 @@ FC=3 responses are standard - byte_count works fine there.
 
 Respond within ~100 ms of receiving a complete request. Real BMS turnaround is 90-114 ms for HR (FC=3) and 84-89 ms for IR (FC=4). Plenty of headroom on a Pi or ESP.
 
-If the emulator misses too many responses, the inverter raises a "BMS comms failure" status bit (~20 missed polls in a row). It will keep retrying though - a brief glitch is recoverable.
+If the emulator misses too many responses, the inverter raises a "BMS comms failure" status bit (~20 missed polls in a row). It will keep retrying though - a brief glitch is recoverable. On a G3 LV the DSP waits about 30 s without a valid reply, then zeroes both current limits and the SoC and sets the fault. The next valid reply clears it.
 
 ### 5. Device address
 
@@ -74,6 +74,8 @@ The strictest validation seen across inverter variants:
 
 Stay inside these envelopes for portable emulation. Realistic LiFePO4 values (~3.2-3.4 V/cell at typical SoC, ambient temperature) easily satisfy them.
 
+For a worked design of a specific case, a Seplos BMS battery on a GivEnergy G3 inverter, see [11-seplos-emulator-design.md](11-seplos-emulator-design.md).
+
 ## Polling cadence to expect
 
 Driven by the inverter:
@@ -81,9 +83,9 @@ Driven by the inverter:
 | Query | Cadence | Response size |
 |---|---|---:|
 | HR poll (device 1 only) | every ~245 ms (range 231-481 ms) | 61 bytes |
-| IR Block 1 (per device) | once per ~12 s rotation cycle | 48 bytes |
-| IR Block 2 (per device) | once per ~12 s rotation cycle | 44 bytes |
-| IR Block 3 (per device) | once per ~12 s rotation cycle | 46 bytes |
+| IR Block 1 (per device) | about every 10.5 s on a G3 | 48 bytes |
+| IR Block 2 (per device) | about every 200 s on a G3 | 44 bytes |
+| IR Block 3 (per device) | about every 200 s on a G3 | 46 bytes |
 | FC=06 mode-change writes | event-driven (charge enable, BMS reset, force-charge); not steady-state | 8 bytes echo |
 
 The inverter waits for response completion before issuing the next query, so there's no bus contention for the emulator to handle.
@@ -104,21 +106,21 @@ See [02-holding-registers.md](02-holding-registers.md) for full layout. Key valu
 | 10 | `0xFFFF` | Reserved |
 | 11 | Total Ah of batteries online | Should normally be a fixed value based on actual capacity of batteries.  Can change if pack goes 'offline'. |
 | 12 | `0x0030` (48) | Hardware-rev constant |
-| 13 | `0x0BCE` (3022) | Firmware version - claim BMS 3022 |
+| 13 | `0x0BCE` (3022) | Firmware version - claim BMS 3022. A G3 LV inverter reads the charge and discharge limits from HR26/27 only when this is 3011 or higher; below that it uses HR25 for both. |
 | 14 | `0x0000` | Status flag |
-| 15 | `0x0000` | 3-flag composite |
+| 15 | `0x0000` | 3-flag composite. A G3 LV ignores bit 0 below 100% SoC, and at 100% bit 0 cancels its "battery full" block, so send 0 |
 | 16 | `0x0000` | Mode/state |
-| 17 | counter that ticks ~once per query | E.g. start at `0x114B` and increment |
-| 18 | `0x389D` | Constant device hash - any plausible value works |
-| 19 | BMS status (normally `0x00CE` or `0x00CF`) | 8-flag composite, see [02-holding-registers.md](02-holding-registers.md) |
-| 20 | Alarms | normally `0x0000`, see [02-holding-registers.md](02-holding-registers.md) |
+| 17 | value that changes once per second | A real BMS derives it from its clock, mostly stepping by +1 each second. Incrementing once per second is the closest simple match; whether any inverter checks it is not known. |
+| 18 | `0x389D` | High half of the same clock hash; it changes about every 18 hours. A constant is fine for short runs. |
+| 19 | BMS status (normally `0x00CE` or `0x00CF`) | 8-flag composite, see [02-holding-registers.md](02-holding-registers.md). On a G3 LV, keep bit 2 set (clear forces a charge of at least 300 W), don't leave bits 0 and 1 both clear, and only set bit 5 if you want a small forced discharge |
+| 20 | Alarms | normally `0x0000`, see [02-holding-registers.md](02-holding-registers.md). On a G3 LV, bit 2 stops charging at once (see below) |
 | 21 | Battery state of charge (0%-100%) | If returning SoC |
 | 22 | Battery voltage | Units of 0.01V |
 | 23 | Primary pack current | 0.01 A units, `0x0000` for idle, or read from your real battery.  If emulating multiple battery packs, divide actual current by number of packs |
 | 24 | Battery temperature | In degrees C |
 | 25 | `0x2328` (9000) | Current limit = 90.00 A |
-| 26 | Charge limit in 0.01A | Controls the inverter max charge power (1000 = ~500W) |
-| 27 | Discharge limit in 0.01A | Controls the inverter max discharge power (1000 = ~500W) |
+| 26 | Charge limit in 0.01A | Controls the inverter max charge power (1000 = ~500W). A G3 LV uses it as the charge limit too; see the G3 LV note in [02-holding-registers.md](02-holding-registers.md). |
+| 27 | Discharge limit in 0.01A | Controls the inverter max discharge power (1000 = ~500W). A G3 LV uses it as the discharge limit too; see the same note. |
 
 ### IR Block 1 (count=21)
 
@@ -144,11 +146,11 @@ See [02-holding-registers.md](02-holding-registers.md) for full layout. Key valu
 [2-byte BE pack voltage 0.001V]     ; e.g. 53.000 V = 0xCEE8
 [2-byte BE pack voltage 0.001V]     ; same value (duplicate readout)
 FF FF FF 35 00 00                  ; mostly fixed pattern
-[2-byte BE calibrated capacity 0.1 Ah]  ; e.g. 0x4BC0 = 193.92 Ah
+[2-byte BE calibrated capacity 0.01 Ah] ; e.g. 0x4BC0 = 193.92 Ah
 00 00
-[2-byte BE design capacity 0.1 Ah]      ; 0x48A8 = 186.00 Ah
+[2-byte BE design capacity 0.01 Ah]     ; 0x48A8 = 186.00 Ah
 00 00
-[2-byte BE remaining capacity 0.1 Ah]   ; computed from SoC x design capacity
+[2-byte BE remaining capacity 0.01 Ah]  ; computed from SoC x design capacity
 [1-byte SoC %]                          ; 0-100
 00 00
 0E 10                              ; constant 3600
@@ -163,10 +165,23 @@ FF FF FF 35 00 00                  ; mostly fixed pattern
 
 ```
 [16 x 2-byte BE cell voltages, raw mV]   ; 32 bytes total. 3.30 V cell = 0x0CE4
-00 B3 00 A5                              ; cell-level diagnostics (varies)
+[2-byte BE max temperature, 0.1 degC]    ; e.g. 00 B3 = 17.9 degC
+[2-byte BE min temperature, 0.1 degC]    ; e.g. 00 A5 = 16.5 degC
 [2-byte BE max cell voltage mV]
 [2-byte BE min cell voltage mV]
 ```
+
+## Stopping a charge on a G3 LV
+
+A G3 LV never takes a charge voltage from the battery. It measures the pack itself and charges until the battery lowers HR26, apart from its own taper by SoC from 90%. So the emulator decides where the pack stops. These rules follow from the D316 DSP firmware (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)):
+
+1. **Cut HR26 as the pack nears full.** The inverter keeps charging at up to its full rate until HR26 drops. Taper HR26 by the highest cell voltage, as the GivEnergy BMS does, not by SoC. If the SoC the emulator reports runs behind the pack's real state, the inverter's own SoC taper starts too late, and the pack can reach its voltage knee at full current.
+2. **HR26 = 0 is not a hard stop.** The DSP never lets the HR26 path go below 1.00 A, so about 1 A still flows until its "battery full" block sets after 30 s.
+3. **HR20 bit 2 is the strongest stop.** Outside a battery calibration it sets the DSP's charge limit to zero at once, whatever else asks for charge, and it raises no DSP fault. My GivEnergy battery set it at the end of a top-up at full charge. Set it with HR26 = 0 at a cell over-voltage stop and on a fault.
+4. **Never run a battery calibration on an emulated battery.** During a calibration (inverter setting HR29 non-zero) the DSP holds both current limits at 8 A or more, never sets its "battery full" block, raises its voltage maximum by 5%, and HR20 bit 2 still lets 5% of rated power through. The ARM also uses HR20 bits 2 and 3 as the "full" and "empty" end points of the calibration, so an emulator that sets them could end it early with a wrong capacity.
+5. **Keep HR109 = 1.** Any other value switches the DSP to a short HR17 to HR25 poll. If that happens while the inverter runs, the DSP reads HR26 and HR27 from past the end of the short reply and gets nonsense limits (see [05-inverter-firmware.md](05-inverter-firmware.md#inverter-settings-that-change-the-bms-link)).
+6. **Check HR98.** The DSP's over-voltage trip is at HR98 `battery_high_voltage_protection_limit` + 1.0 V (1 s in total) or + 2.0 V (40 ms in total), on the inverter's own voltage reading, and the trip switches the battery converter off both ways. HR98 is 58.5 V on my inverter, but the DSP's default is 56.0 V, which puts the trip at 57.0 V. The inverter's reading is higher than the pack's: 0.2 V to 0.3 V at rest and about 1.3 V at 60 A on my system. Choose the pack's charge ceiling with that margin below the trip, and read HR98 again after any firmware update or settings change.
+7. **The pack's own BMS is the last line.** Keep its cell over-voltage protection in place.
 
 ## Test methodology without a real inverter
 
@@ -190,4 +205,8 @@ When the dongle / real inverter is available, end-to-end testing is straightforw
 
 4. **Forgetting to echo FC=06 writes** - the inverter retries indefinitely on a missing FC=06 ACK. This stalls the bus and HR/IR polling resumes only after the FC=06 retry exits.
 
-5. **Slow CRC implementation** - if you use a bit-shift CRC for every response, double-check your latency. A 56-byte HR response means CRCing ~58 bytes 4 times per second; cheap on a Pi, marginal on small AVRs. Use the table-based implementation for deterministic timing.
+5. **Treating the SoC in IR Block 2 as display only** - the inverter stops discharging when this SoC reaches its 4% floor. If an emulator passes through a third-party battery's SoC, that value decides how deeply the battery is discharged. Scale it if 4% on the inverter should leave a margin above the battery's own cut-off. The inverter reads Block 2 only about every 200 s, so SoC can drop about 2% between reads under heavy discharge. On a G3 LV the stop is quicker and more exact than that: in a forced discharge at about 71 A, mine stopped within about a second of HR21 (polled every ~245 ms) reading 4%, well before the next IR Block 2 read was due. So on that inverter the floor check reads HR21 alone, and it acts on it almost at once. The BMS itself doesn't soften the stop - HR27 (discharge limit) and HR20 (alarms) stayed unchanged all the way down to 4% - so an emulator can't rely on the BMS tapering current near the floor; the inverter is the only thing enforcing it, from whatever SoC field it reads. See [06-wire-captures.md](06-wire-captures.md#discharge-stops-at-the-4-soc-floor) and [06-wire-captures.md](06-wire-captures.md#discharge-to-the-reserve-and-a-full-charge-27-29-september).
+
+6. **Slow CRC implementation** - if you use a bit-shift CRC for every response, double-check your latency. A 56-byte HR response means CRCing ~58 bytes 4 times per second; cheap on a Pi, marginal on small AVRs. Use the table-based implementation for deterministic timing.
+
+7. **Passing a third-party pack's SoC straight through.** A GivEnergy battery has a hidden buffer: my 8.2 kWh Gen 1 pack is built from 200 Ah cells but reports only 160 Ah usable to the inverter, and even at the inverter's own 100% the cells still had headroom below their real top (see [06-wire-captures.md](06-wire-captures.md#discharge-to-the-reserve-and-a-full-charge-27-29-september)). So the inverter's 0% to 100% window is really a narrower slice of the cells' true range at both ends. A third-party pack usually doesn't carry the same buffer, so an emulator that reports its raw SoC will let the inverter cycle it much deeper than a genuine GivEnergy battery ever sees - all the way to the third-party pack's own cut-offs, not a comfortable margin above them. Scale the SoC window instead of passing it through raw: for example, present 10% to 95% of the real SoC as the inverter's 0% to 100%, so the real pack keeps its own margin at both ends.

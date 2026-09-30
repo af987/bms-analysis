@@ -33,23 +33,25 @@ The 28 registers (= 56 bytes) decoded at the byte level:
 | 1-4 | 2-9   | constant `0xFFFF` x 4 | Never written after the 0xFFFF init. **Truly unused / reserved.** |
 | 5-9 | 10-19 | ASCII serial number (e.g. `XXXXXXXXXX`) | 5 halfwords copied big-endian from a 10-byte SRAM struct. |
 | 10  | 20-21 | constant `0xFFFF` | Never written. **Unused.** |
-| 11  | 22-23 | (`0x00BA` and `0x0174`) Total Ah of batteries online.  Two values seen are multiples of documented battery Ah capacity.  186 seen when one battery at min charge during calibration cycle, else 372. | **Remaining Ah of batteries online**, in whole amp-hours. Computation: `int(*(float*)0x20000180 / 100.0)` where the source float is `uint_to_float(remaining_cAh)` (a centi-Ah accumulator). One ~9.5 kWh / 51.2 V LFP pack ≈ 186 Ah; two = 372 Ah. |
+| 11  | 22-23 | (`0x00BA` and `0x0174`) Total Ah of batteries online.  Two values seen are multiples of documented battery Ah capacity.  186 seen when one battery at min charge during calibration cycle, else 372. In a 90-hour G3 capture with one 9.5 kWh battery, HR11 stayed at 186 while SoC moved between 4% and 95%, so it tracks installed capacity, not remaining charge. See [06-wire-captures.md](06-wire-captures.md#findings-from-a-90-hour-g3-capture). | **Remaining Ah of batteries online**, in whole amp-hours. Computation: `int(*(float*)0x20000180 / 100.0)` where the source float is `uint_to_float(remaining_cAh)` (a centi-Ah accumulator). One ~9.5 kWh / 51.2 V LFP pack ≈ 186 Ah; two = 372 Ah. **Conflicts with wire data**: the G3 capture shows HR11 fixed at 186 across a full discharge, so the source value does not fall with SoC in practice. |
 | 12  | 24-25 | constant `0x0030` (48) | Init writes literal `0x30`. Possibly a **hardware revision** field. |
 | 13  | 26-27 | constant `0x0BCE` (3022) | Confirmed: `movw r0, #0xbce; strh r0, [r4, #0x1a]`. **BMS firmware version.** |
 | 14  | 28-29 | constant `0x0000` in capture | **Inverter-set "charge mode selector active" flag.** Source `*(u8*)0x200000E9` is a normalised mirror of `*(u8*)0x200000E8`. The setter is the Modbus FC=6 reg-2 path (TBB at flash `0x0801E240` entry 2) where the inverter writes a charge-mode index `0..9` (`0` = auto, `1..9` = forced mode). `fc3_update_task` normalises non-zero values to `1`. HR14 is therefore `1` iff the inverter currently has a non-zero charge mode selected. Stays at `0` in normal auto-mode operation, which matches the capture. |
-| 15  | 30-31 | constant `0x0000` in capture | 3-bit OR-mask. **Sources confirmed empirically**: bit 0 (lsb) from `*(u8*)0x2000013F` (non-zero); bit 1 from `*(u8*)0x20000198`; bit 2 from `*(u8*)0x20000197`. **Bit 0 fully writer-traced**: `compute_pack_current_limits` reads HR21's SoC source `*(u16*)0x20000184`, compares to `0x64`, writes `1` to `*(u8*)0x2000013F` if SoC >= 100 else `0`. So **bit 0 = "primary pack SoC = 100%"** ("balancing-ready"). Bits 1 and 2 are PACE-derived (written by `pace_cid2_dispatch` via base+offset addressing only when a valid PACE frame is in the RX buffer; specific PACE field for each bit not yet traced). See [Register 15 Bits](#register-15-bits). |
+| 15  | 30-31 | constant `0x0000` in Ken's capture. On my battery (BMS firmware 3020) it was 1 during most of a forced charge, from 62% to 98% SoC, and 0 at 100%. See [Register 15 Bits](#register-15-bits). | 3-bit OR-mask. **Sources confirmed empirically**: bit 0 (lsb) from `*(u8*)0x2000013F` (non-zero); bit 1 from `*(u8*)0x20000198`; bit 2 from `*(u8*)0x20000197`. **Bit 0 fully writer-traced**: `compute_pack_current_limits` reads HR21's SoC source `*(u16*)0x20000184`, compares to `0x64`, writes `1` to `*(u8*)0x2000013F` if SoC >= 100 else `0`. The reading from this was bit 0 = "primary pack SoC = 100%" ("balancing-ready"). My G3 capture contradicts it: bit 0 was set during the bulk charge and never at 100%. Bits 1 and 2 are PACE-derived (written by `pace_cid2_dispatch` via base+offset addressing only when a valid PACE frame is in the RX buffer; specific PACE field for each bit not yet traced). See [Register 15 Bits](#register-15-bits). |
 | 16  | 32-33 | constant `0x0000` in capture | **AFE-derived state byte** at `*(u8*)0x20000518`. The address sits inside a struct accessed via base+offset by `pace_cid2_dispatch` at flash `0x0801A17A` (nearby literals `0x20000524`/`0x20000530` are loaded inside that function). Ghidra's autoanalysis doesn't unify the indirect writes, but architecturally HR16 mirrors whatever state byte the PACE/Pylontech inter-pack protocol parser writes into that struct position. Specific PACE field unconfirmed -- would require frame-injection tracing. |
-| 17  | 34-35 | varies (`0x114A`-`0x1219`, ~142 distinct values) | **Low 16 bits of a BCD-serial-derived hash.** Algorithm: 6 BCD bytes at SRAM `0x20000105..A` are reverse-byte-order copied to `0x20000190..A` by an upstream copier at flash `0x08001362`. Hash applies forward over `0x20000190..A`: `acc = (bcd_to_dec(b[i]) + acc) << shifts[i]` for `i=0..4` with `shifts=[4,5,5,6,6]`; then `r = bcd_to_dec(b[5]) + acc`. HR17 = `r & 0xFFFF`. **Empirically verified end-to-end.** |
-| 18  | 36-37 | constant `0x389D` (14493) across all 829 captures | High 16 bits of the same hash: `(r >> 16) & 0xFFFF`. Constant per device because the 6 source bytes are the device serial fragment, fixed at manufacture. HR17/HR18 are effectively a per-device fingerprint, NOT a runtime state hash. |
+| 17  | 34-35 | varies (`0x114A`-`0x1219`, ~142 distinct values). In the 90-hour G3 capture it changed once per second (322,726 changes in 323,009 s), mostly by +1. | **Low 16 bits of a hash of 6 BCD bytes.** The once-per-second change means the source bytes are a BCD real-time clock, not a serial fragment as first assumed. Algorithm: 6 BCD bytes at SRAM `0x20000105..A` are reverse-byte-order copied to `0x20000190..A` by an upstream copier at flash `0x08001362`. Hash applies forward over `0x20000190..A`: `acc = (bcd_to_dec(b[i]) + acc) << shifts[i]` for `i=0..4` with `shifts=[4,5,5,6,6]`; then `r = bcd_to_dec(b[5]) + acc`. HR17 = `r & 0xFFFF`. **Empirically verified end-to-end.** |
+| 18  | 36-37 | constant `0x389D` (14493) across all 829 captures | High 16 bits of the same hash: `(r >> 16) & 0xFFFF`. An earlier reading called HR17/HR18 a per-device fingerprint. With a clock as the source, HR18 changes only when the low half overflows, about every 18 hours at one step per second, which is why it looks constant over a short capture. |
 | 19  | 38-39 | See [Register 19 Bits](#register-19-bits) | 8-bit composite status. All 8 bits empirically mapped to source addresses; see table. Bits 0/1 encode current direction via IEEE-754 equality with zero (not a sign-bit test). |
 | 20  | 40-41 | See [Register 20 Bits](#register-20-bits) | 8-bit composite alarms / global alarm aggregate. All 8 bits empirically mapped to source addresses; see table. **D8/D9 writers fully traced via dynamic Unicorn**: `FUN_0802224C` (the giant pack-walking scheduler-tick that also writes HR11/HR21 mirrors) writes `0x200000D9` (over-V) at PC `0x08022456` and `0x200000D8` (under-V) at PC `0x08022442`. Bit-1-of-`0x20000279`/`27A`/`27B` (current/temp/voltage) alarm bitmaps are SET by `pace_cid2_dispatch` (driven by AFE alarms over the PACE protocol) and CLEARED by local state-machine recovery (`FUN_0801ED08`/`F02C`/`F3F4`). So HR20 bits are global OR-aggregates over all packs, not per-pack flags. |
 | 21  | 42-43 | Battery state of charge 0-100 (%) | Direct copy of `*(u16)0x20000184`. **Confirmed SoC %** by dynamic Unicorn trace. The full chain: the SoC computer `FUN_080181F2` (no Ghidra auto-fn) runs `*(u8*)0x20000189 = (u8)( *(float*)0x2000017C / *(float*)0x20000168 * 100.0f )` gated by a ~1.7M-tick counter; the HR-mirror task `FUN_0802224C` then runs `HR21 = *(u8*)0x20000189` (zero-extended to u16). A second HR21 write site in `FUN_0802224C` at `0x0802257A` is a delta-limiter (only updates if the new value is within +/-1 of current), and a third at `0x08022618` is a "clamp to 100%" path. The delta-limiter explains why Ken's capture saw SoC drifting slowly. The upstream u16 cAh counter at `0x20000186` (which HR11's float mirrors) is **also now writer-traced** via Cortex-M boot-from-reset Unicorn harness: it's written by the PACE CID2 = 0xA7 handler at flash PCs `0x0801AB7C` (high byte) / `0x0801AB90` (low byte), reading 4 ASCII hex chars from INFO offsets 0x15-0x18 and decoding via `hex_pair_to_byte` (flash `0x08010FD6`). So CID2 = 0xA7 is the AFE -> BMS command for "set remaining cAh". For emulator purposes, writing directly to `0x20000186` and `0x20000189` is sufficient since the mirror task copies them to HR11/HR21 each tick. |
 | 22  | 44-45 | Battery voltage in units of **0.01 V** (centivolts), measured at primary battery pack. | `*(u16)0x20000114 / 10`. Source at `0x20000114` is in **mV** (a 48 V pack stores as 48000 = 0xBB80). Integer division by 10 produces 0.01 V resolution (4800 = 48.00 V). |
 | 23  | 46-47 | Signed pack current of primary pack only, **units 0.01 A (centi-amps)**. Positive = charge, negative = discharge. Multi-pack inverters scale by pack count. | Computation: `(s16)f2iz(fdiv(*(float*)0x2000014C, 10.0f))` via `__aeabi_fdiv` (helper `0x0802C2A8` -- provably fdiv: body has `sub.w r2, r2, r3` exponent-subtraction and PC-relative reciprocal lookup table at `addw ip, pc, #0x108`) then `__aeabi_f2iz` (helper `0x0802C42C`). The source float at `0x2000014C` is in **milli-amps (mA)** -- the `/10` is a precision truncation, not a unit-step conversion. Wire value 1490 maps to float 14900 mA = 14.9 A. Confirmed empirically by wire trace: pack drawing ~14.9 A produces HR23 = 1490 in 0.01 A units. Earlier docs revisions oscillated between 0.1 A and 0.01 A; centi-amps is the settled answer. |
 | 24  | 48-49 | **Maximum** cell temperature in whole °C. | 4-element MAX loop over `*(u16*)0x200011B6..BA` (4 temperature samples, raw format `°C × 10 + 2730`). Computation: `(max_raw - 2730) / 10`. So `0x0019` (25) -> 25 °C max cell temperature. Earlier readings called this "min cell voltage" -- that was wrong on two counts: the loop finds max (not min) and the source array is temperatures (not voltages). |
-| 25  | 50-51 | constant `0x2328` (9000) in capture; **dynamic** when configured limit changes | `*(u16)(0x2000153A+8) × 100`. The `× 100` here is centi-amp scaling (0.01 A). Source at `0x2000153A+8` is **PACE slice 1, byte offset 8** (`g_pace_slice_table` base `0x200014EA` + slice 1 at `+0x50` + 8) -- a configured per-pack max-charge-current value, in whole amps (90 -> 9000). |
+| 25  | 50-51 | constant `0x2328` (9000) in capture; **dynamic** when configured limit changes. Constant `0x3A98` (15000) throughout the 90-hour G3 capture. | `*(u16)(0x2000153A+8) × 100`. The `× 100` here is centi-amp scaling (0.01 A). Source at `0x2000153A+8` is **PACE slice 1, byte offset 8** (`g_pace_slice_table` base `0x200014EA` + slice 1 at `+0x50` + 8) -- a configured per-pack max-charge-current value, in whole amps (90 -> 9000). |
 | 26  | 52-53 | Charge limit in 0.01A, honoured by Giv inverter | **Cross-charge current target -- charge side** of the pack-pair balancing controller. `*(u16)0x20000142`, written by `compute_pack_current_limits` (flash `0x080167BA`) which iterates the 6 FC4 pack slots, computes per-pack min/max budgets, and runs a ramp-with-hysteresis controller (1 A/call ramp step, 30% of configured max as cap). Tracks HR27 in steady state by conservation (`charge_current = discharge_current` at the coupling point); diverges during transitions because each side has independent ramp + converge logic. |
 | 27  | 54-55 | Discharge limit in 0.01A, honoured by Giv inverter | **Cross-charge current target -- discharge side**. `*(u16)0x20000144`, same writer function as HR26, mirrored logic. |
+
+**G3 LV note on HR26 and HR27.** A capture from my Hybrid Gen3 LV (firmware D0.316-A0.316, GivEnergy 8.2 kWh battery on BMS firmware 3020) confirms that **HR26 limits charging** on that inverter too, as above. The battery normally reports HR26 = HR27 = 80.00 A. During a forced charge the current held at about 60.5 A (set by the inverter's 3.6 kW charge rate), then the inverter itself tapered it to about 14.6 A between 90% and 98% SoC with both limits unchanged. At 99% SoC the BMS cut **HR26 to 3.20 A while HR27 stayed at 80.00 A**, and the charge current fell straight to about 2.9 A and stayed under HR26 until the pack was full. The DSP firmware (D316) agrees: it uses HR26 as the charge limit and HR27 as the discharge limit (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)). An earlier reading suggested the opposite; that came from an error in my notes, not from the firmware.
 
 ### Register 15 Bits
 
@@ -64,6 +66,10 @@ The 28 registers (= 56 bytes) decoded at the byte level:
 
 The mask is built by `if (src != 0) hr15 |= (1 << bit)` for each source; HR15 is zero in Ken's capture because all three sources were zero throughout.
 
+**Bit 0 on my battery (September 2026).** My GivEnergy 8.2 kWh battery (BMS firmware 3020) set HR15 to 1 for about an hour during a forced charge, from 62% to 98% SoC. It went back to 0 about a minute after the inverter cut the charge current from about 20.7 A to about 14.8 A, and it was never 1 at 100% SoC. So bit 0 does not mean "SoC = 100%", as the firmware reading above says. Either the writer trace is incomplete or firmware 3020 differs from 3022. I don't know what it does mean yet.
+
+**What the G3 LV DSP does with it.** The D316 DSP clears bit 0 whenever the previous SoC it received was below 100%, so bit 0 during a bulk charge is thrown away. At 100% SoC, bit 0 would cancel the DSP's "battery full" charge block and let a forced charge go past the upper SoC target. My battery sends 0 at 100%, so this never happened in my capture. See [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers).
+
 ### Register 19 Bits
 
 Register 19 is a set of status bits indicating the BMS state to the inverter. The behaviour-observation table below was derived from Ken's wire captures correlated to SoC / cycle conditions; the source-mapping table that follows comes from black-box execution of the firmware in Unicorn (vary one input, observe HR19).
@@ -75,7 +81,7 @@ Register 19 is a set of status bits indicating the BMS state to the inverter. Th
 | 1 (lsb) | Discharging | From protocol analysis and from sign of `*(int*)0x2000014C` |
 | 2 ||Normally high|
 | 3 |Request Charge?|Normally high, low for extended period of min SOC|
-| 4 |Battery MOSFETs enabled?|Normally high, oscillates below 4% SOC and near 100% SOC during calibration|
+| 4 |Battery MOSFETs enabled?|Normally high, oscillates below 4% SOC and near 100% SOC during calibration. The G3 capture shows the oscillation starting at the same poll that the inverter stops discharging at its 4% SoC floor, and lasting until the next charge.|
 | 5 ||Normally low|
 | 6 |Forbid Charge?|Normally low, high briefly at max SOC during calibration|
 | 7 |Allow Discharge?|Normally high, low at minimum SOC during calibration|
@@ -113,7 +119,7 @@ Each of HR19's source bytes was traced back to the firmware function that writes
 | Bit (1-idx) | Source byte | Writer function (flash addr) | Semantic |
 |---:|---|---|---|
 | 3 (charge req?) | `*(u8*)0x20000140` | `compute_pack_current_limits` @ `0x080167BA` | **Charge-vote consensus across packs.** Writer walks all 6 FC=4 pack slots; for each, reads `pack[0x8E]` (per-pack state byte). Increments a counter on state==1, resets it on state==2; final byte is `1` iff counter > 0. HR19 bit 3 is set when the source byte is 0 - i.e. "no charge-vote disagreement". |
-| 4 (MOSFETs enabled?) | `*(u8*)0x200000CE` | `FUN_080209B0` (per-cell V checker) | **All 16 cells within voltage limits.** Writer scans the per-cell voltage array; flags a cell if `cell_mV < 2600` OR `cell_mV < (threshold + 50)` (when |current| < 1 A) OR `cell_mV < (threshold + 200)` (when |current| >= 1 A). Sets source byte to 1 if any cell fails, 0 if all pass. HR19 bit 4 is set when source byte is 0 -> "all cells OK". Confirms Ken's "Battery MOSFETs enabled?" observation. |
+| 4 (MOSFETs enabled?) | `*(u8*)0x200000CE` | `FUN_080209B0` (per-cell V checker) | **All 16 cells within voltage limits.** Writer scans the per-cell voltage array; flags a cell if `cell_mV < 2600` OR `cell_mV < (threshold + 50)` (when |current| < 1 A) OR `cell_mV < (threshold + 200)` (when |current| >= 1 A). Sets source byte to 1 if any cell fails, 0 if all pass. HR19 bit 4 is set when source byte is 0 -> "all cells OK". Confirms Ken's "Battery MOSFETs enabled?" observation. **The current dependence conflicts with G3 wire data** (see [Evidence from a G3 capture](#evidence-from-a-g3-capture)): the bit never cleared under load, even with a cell at 2951 mV, and only cleared at rest. |
 | 5 (normally low) | `*(u8*)0x2000009D` | `FUN_0801ED08` (clearer) + `FUN_0801151E` (setter) | **Any BMS protection flag active.** Setter-context analysis shows **only bit 1** of `0x2000009D` is ever set or cleared -- effectively a single boolean. Setters: `FUN_0801151E` (counter timeout `>= 100`) + `FUN_0801ED08` (AFE-flag-set path); both `ORR #0x02`. Clearer: `FUN_0801ED08` after recovery debouncing. The 8-bit iteration in `FUN_0801ED08` is over a DIFFERENT upstream event bitmap; the aggregated result lands in bit 1 of `0x2000009D`. HR19 bit 5 is set when source byte is non-zero -> "any protection active". Matches Ken's "normally low" observation. |
 | 6 (forbid charge?) | `*(u8*)0x20000141` | `compute_pack_current_limits` | **Discharge-vote consensus across packs.** Same logic as bit 3 with reversed polarity: state==2 increments, state==1 resets. Combined with bit 3, the pair encodes a 2-bit consensus mode (idle/charge/discharge/disagreement). |
 
@@ -124,7 +130,45 @@ Bits 1/2 (charge/discharge direction encoding via IEEE-754 equality with zero on
 | `0x9A` | bit 1 (val `0x02`) | bit 8 | "Allow Charge and Discharge?" |
 | `0x9B` | bit 2 (val `0x04`) | bit 7 | "Allow Discharge?" |
 
-So **CID2 = 0x9A is the AFE "Allow Charge and Discharge" state-set command**, and **CID2 = 0x9B is the AFE "Allow Discharge" state-set command**. Both commands first clear the current-alarm and temperature-alarm bitmaps (a state-transition reset), then OR their specific bit into the voltage-alarm byte. Bits 1/2 of HR19 still rely on Ken's behaviour observations for semantic naming.
+So **CID2 = 0x9A is the AFE "Allow Charge and Discharge" state-set command**, and **CID2 = 0x9B is the AFE "Allow Discharge" state-set command**. Both commands first clear the current-alarm and temperature-alarm bitmaps (a state-transition reset), then OR their specific bit into the voltage-alarm byte. Bits 1/2 of HR19 are now backed by G3 wire data (see below).
+
+#### Evidence from a G3 capture
+
+The firmware analysis above was done on BMS firmware v3022. The 90-hour G3 capture (see [06-wire-captures.md](06-wire-captures.md#findings-from-a-90-hour-g3-capture)) comes from a battery reporting firmware v4009, so each bit was checked against its wire data. The check uses the exact sign of HR23 in the same response, so it doesn't depend on the TCP stream. `tools/decode_fields.py` records the result as an evidence level for each bit in `HR19_BITS`.
+
+| Bit (0-idx) | Name in `HR19_BITS` | Evidence | What the G3 data shows |
+|---:|---|---|---|
+| 0 | `discharging_or_idle` | confirmed on wire | Set in all 658,795 polls with HR23 < 0 and clear in all 642,869 polls with HR23 > 0. Mixed when HR23 = 0, because HR23 is rounded to 0.01 A and the firmware tests the unrounded current. |
+| 1 | `current_flowing` | consistent | Set whenever HR23 is non-zero. Clear in only 13 polls, all with HR23 = 0. |
+| 2 | `charge_vote_ok` | firmware only | Always set, including 8 hours at the 4% SoC floor. Ken saw it go low at minimum SoC, possibly only during a calibration cycle. |
+| 3 | `all_cells_ok` | confirmed on wire | Clears only when the current is within 1 A of zero and the lowest cell is at or below 3039 mV. Never clears with more than 1 A flowing, even with a cell at 2951 mV. The meaning holds, but the firmware reading that the check is stricter under load does not match. |
+| 4 | `protection_active` | firmware only | Always clear. |
+| 5 | `discharge_vote` | firmware only | Always clear. |
+| 6 | `allow_discharge` | firmware only | Always set. |
+| 7 | `allow_charge_and_discharge` | firmware only | Always set. |
+
+#### Evidence from my G3 capture (September 2026)
+
+My capture of a G3 LV with a GivEnergy 8.2 kWh battery (BMS firmware 3020, see [06-wire-captures.md](06-wire-captures.md#findings-from-my-g3-capture-september-2026)) shows some things the 90-hour capture did not. Bits are 0-indexed, as in the table above.
+
+- **Bit 3 also clears at high cell voltage.** It was clear for two spells at the top of charge, about 17 minutes and about 45 minutes, with SoC at 99% to 100% and the highest cell between 3522 mV and 3594 mV. So `all_cells_ok` covers over-voltage too, not only the under-voltage that the writer trace found.
+- **Bit 5 pulses at full.** It was set for about 4.5 minutes after the last top-up, then for about a minute roughly every 38 minutes, always at 100% SoC. Each pulse started a small discharge, from about -0.15 A to about -2.8 A. This fits Ken's "high briefly at max SOC", and it happened outside a calibration.
+- **Bit 3 didn't flicker at the reserve.** In a later capture (27-29 September 2026) my battery held at the 4% floor for 61 minutes with HR19 only toggling `0xCF`/`0xCE` on the sign of the near-zero current (bit 0); bit 3 stayed set throughout. The 90-hour capture above saw the equivalent bit flicker at the floor - mine didn't. See [06-wire-captures.md](06-wire-captures.md#discharge-to-the-reserve-and-a-full-charge-27-29-september).
+
+**What the G3 LV DSP does with HR19.** From the D316 DSP image:
+
+| Bit (0-idx) | Effect on a G3 LV |
+|---:|---|
+| 0 and 1 | Both clear means the BMS is idle. The DSP then skips its BMS power limits, its "battery full" block and its voltage mismatch check. |
+| 2 | With bit 2 clear, the DSP forces a charge of at least 300 W (not during a calibration). |
+| 3 | None. The DSP never reads it, so the clearing at high cell voltage has no effect. |
+| 4 | Passed to the ARM as a status bit. |
+| 5 | Outside a calibration, the DSP caps its power request at 120 W of discharge. That is the small discharge seen in the capture: the battery asks to come off full, and the G3 obeys. |
+| 6 and 7 | Not checked. |
+
+See [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers).
+
+An earlier hypothesis mapped HR19 onto the PACE `CID2=0x44` pack alarm byte (`PACK_ALARM_BITS` in `tools/pace_reference.py`). The wire data rules this out. Bit 0 would be a cell overvoltage alarm that is set on every discharge poll, bit 1 a cell undervoltage alarm that is almost always set, and bit 3 an undervoltage alarm with the wrong polarity.
 
 ### Register 20 Bits
 
@@ -186,6 +230,18 @@ All three clearer functions are structurally identical: iterate 8 bits, for each
 
 This **firmware-side three-byte split (current / temperature / voltage) lines up exactly with the three alarm-category clusters in GivTCP's `battery_fault_code` enum**, which explains why Ken's GivTCP-derived bit labels in the table above are accurate semantic names.
 
+#### Evidence from my G3 capture, and what the G3 LV DSP does
+
+In my capture (G3 LV, BMS firmware 3020) HR20 was 0 all the time except once. It went to 4 (bit 2, over-voltage, 0-indexed) at the end of the last top-up at full charge, and stayed at 4 for 271 s while the pack discharged at about 2.8 A with HR19 bit 5 set. It was clear during every charge, including the top-ups that took HR22 to 57.52 V. GivTCP's battery `warning_1` showed 4 for the same spell.
+
+The D316 DSP acts on bits 2 and 3 (0-indexed):
+
+- **Bit 2**, outside a battery calibration, sets the DSP's charge power limit to zero at once, whatever else asks for charge. After 30 s it also sets the DSP's "battery full" block. During a calibration it only cuts the charge power to 5% of rated power (180 W on a 3.6 kW inverter), and the ARM takes it as the "full" end point of the calibration.
+- **Bit 3** cuts the discharge power limit to 10% of rated power (360 W on a 3.6 kW inverter). During a calibration the ARM takes it as the "empty" end point.
+- The DSP sends the low byte to the ARM. Neither bit raises a DSP fault.
+
+This agrees with the `modbus_proxy` experiments below (0x04 stopped charging, 0x08 limited discharge to about 340 W). See [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers).
+
 ## Field-variation analysis
 
 Across 829 HR responses captured by Ken (over a 3.4-minute cold-start window):
@@ -201,7 +257,7 @@ The capture happened with the system in approximately steady state (low current,
 
 ## Reg 11 transition
 
-**Reg 11** changed from `0x00BA` (186) to `0x0174` (372) at 07:23:42.876 - just 3.5 seconds into the capture. With reg 11 understood as **remaining Ah**, this is the BMS reporting that a second 186 Ah pack has come online: `186 -> 372` Ah (one pack -> two packs). The transition coincides with the BMS finishing its boot-time discovery of attached packs.
+**Reg 11** changed from `0x00BA` (186) to `0x0174` (372) at 07:23:42.876 - just 3.5 seconds into the capture. Reg 11 tracks the capacity of the batteries online (see the G3 evidence in the register table), so this is the BMS reporting that a second 186 Ah pack has come online: `186 -> 372` Ah (one pack -> two packs). The transition coincides with the BMS finishing its boot-time discovery of attached packs.
 
 ## Empirical confirmation methodology
 
