@@ -318,13 +318,13 @@ To resolve remaining open questions, useful targeted captures would be:
 
 | Capture scenario | Resolves |
 |---|---|
-| Discharge under significant load | Reg 23 (current) magnitude / sign behaviour; reg 21 (suspected SoC) decreasing |
 | Charge from grid (Eco mode) | Reg 11 transition triggers; charge-mode bit positions |
-| Force-charge or force-discharge | FC=06 write traces to address 0x00E7 (control byte) |
-| Low-SoC condition (~10%) | Warning/fault bits in reg 19 |
+| Battery calibration (HR29 non-zero) | HR20 bits 2 and 3 as the calibration end points; any FC=06 writes |
 | Inverter cold boot | First-byte-after-power-on probe sequence (if any) |
 | Imbalance condition | Balancing-active flag identification |
 | Multi-battery added/removed | "Device appears" / "device disappears" handling |
+
+The G3 captures above have already covered discharge under load (HR23 is the pack current in 0.01 A, HR21 the SoC), the low-SoC floor (HR19 bit 3, HR27 cuts on a Gen 3 battery) and forced charge and discharge (no FC=06 writes). An earlier row here expected force-charge writes to address `0x00E7`. That address belongs to the inverter's device `0x11` meter path, not to the battery (see [05-inverter-firmware.md](05-inverter-firmware.md#a316--hy-series-armstorebin)).
 
 ## Validation campaign methodology
 
