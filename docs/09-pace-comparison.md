@@ -10,7 +10,7 @@ Both protocols expose substantially the same BMS state, populated from the same 
 This matters for two reasons:
 
 1. **An emulator (Goal 1) can be built around an existing PACE client library.** Read your underlying battery's state into a PACE-compatible internal model, then serialize that model twice - once as PACE bytes for any UART4 listener, once as the GivEnergy flat Modbus layout for the inverter.
-2. **The bridge (Goal 2) is trivially close to a Pylontech CAN bridge.** Pylontech CAN is itself a wire format for the same PACE data model. Most fields map directly with at most a unit-scale change.
+2. **The bridge (Goal 2) is close to a Pylontech CAN bridge.** The pack-level fields map directly with at most a unit-scale change. The basic Pylontech LV CAN frame set carries fewer fields than PACE, though: no capacity and no cell voltages (see [Implications for a bridge](#implications-for-a-bridge-goal-2)).
 
 ## Field map
 
@@ -21,13 +21,13 @@ This matters for two reasons:
 | IR Block 2 byte 0 | Cell count | `CELL_NUM` | Yes |
 | IR Block 2 bytes 1-2 | Cycle count | `CYCLE_COUNT` | Yes |
 | IR Block 2 bytes 7-8 | Pack voltage (mV) | `PACK_VOLTAGE` (mV) | Yes |
-| IR Block 2 bytes 15-16 | Calibrated capacity (0.1 Ah) | `TOTAL_CAP` (`USERDEF`-controlled unit) | Yes |
-| IR Block 2 bytes 23-24 | Remaining capacity (0.1 Ah) | `REMAIN_CAP` | Yes |
+| IR Block 2 bytes 13-16 | Calibrated capacity (0.01 Ah) | `TOTAL_CAP` (`USERDEF`-controlled unit) | Yes |
+| IR Block 2 bytes 21-24 | Remaining capacity (0.01 Ah) | `REMAIN_CAP` | Yes |
 | HR reg 23 (bytes 46-47) | Pack current (signed centi-amps, 0.01 A) | `PACK_CURRENT` (signed 0.1 A) | GivEnergy at higher precision -- bridge to PACE must divide by 10 |
 | IR Block 3 bytes 36-37 | Max cell voltage (mV) | Not in standard PACE Get Analog - clients compute | GivEnergy explicit |
 | IR Block 3 bytes 38-39 | Min cell voltage (mV) | Not in standard PACE Get Analog - clients compute | GivEnergy explicit |
 | IR Block 2 byte 25 | SoC % (direct) | Not in standard PACE Get Analog - clients compute from REMAIN/TOTAL | GivEnergy explicit |
-| IR Block 2 bytes 19-20 | Design capacity (0.1 Ah) | Not in standard PACE - vendor extension territory | GivEnergy explicit |
+| IR Block 2 bytes 17-20 | Design capacity (0.01 Ah) | Not in standard PACE - vendor extension territory | GivEnergy explicit |
 | IR Block 1 bytes 0-19 | Serial number (20-char ASCII) | `CID2=0x46` "Get Manufacturer Info" | Same data, separate PACE command |
 | IR Block 2 bytes 35-36 | BMS firmware version (e.g. `0x0BCE`) | Part of `CID2=0x46` Manufacturer Info | Same data, packed differently |
 | HR reg 19 byte | 8-flag composite status | `CID2=0x44` "Get Alarm Data" (per-cell + pack-level) | Same concept, collapsed into one HR byte vs PACE's separate alarm-data response with per-cell granularity |
@@ -76,7 +76,7 @@ struct pack_state {
     char     serial[20];
     uint16_t firmware_version;   // e.g. 0x0BCE
     uint8_t  status_flags;       // 8-bit composite
-    uint16_t current_limit_dA;   // = config_value * 100
+    uint16_t current_limit_cA;   // HR25 = config_value * 100, 0.01 A
 };
 ```
 
@@ -89,7 +89,7 @@ If you only need to satisfy a GivEnergy inverter, you only need the Modbus seria
 
 ## Implications for a bridge (Goal 2)
 
-Pylontech CAN broadcasts the same fields the table above lists, just packaged as 8-byte CAN frames at fixed message IDs. The bridge logic becomes:
+Pylontech CAN broadcasts the pack-level fields from the table above, packaged as 8-byte CAN frames at fixed message IDs. The bridge logic becomes:
 
 ```
 poll GivEnergy battery (Modbus controller)
@@ -105,13 +105,15 @@ Most field-by-field translations are direct:
 | `pack_voltage_mV` | divide by 10 -> `BatteryVoltage` (0.01 V) |
 | `pack_current_cA` | divide by 10 -> `BatteryCurrent` (0.1 A) |
 | `soc_pct` | direct |
-| `total_cap_cAh` | divide by 10 -> `RatedCapacity` (0.1 Ah) |
-| `cell_mV[]` | compute min/max -> `MinCellVoltage`, `MaxCellVoltage` (1 mV) |
-| `temp_decidegC[]` | compute min/max -> `MinCellTemperature`, `MaxCellTemperature` (0.1 deg C) |
-| `current_limit_dA` | -> `MaxChargeCurrent` and `MaxDischargeCurrent` (0.1 A) |
+| `total_cap_cAh` | no field in the basic LV frame set |
+| `cell_mV[]` | no field in the basic LV frame set; some targets take min/max cell voltage in extra frames |
+| `temp_decidegC[]` | one pack temperature (0.1 deg C) |
+| HR26 / HR27 (0.01 A) | divide by 10 -> `MaxChargeCurrent` and `MaxDischargeCurrent` (0.1 A). HR25 (`current_limit_cA`) is only a fallback: it stays at its configured value while the BMS cuts HR26 at the top of a charge |
 | `status_flags` | bit-by-bit map to Pylontech protection / warning flags |
 
-See [08-bridge-implementation.md](08-bridge-implementation.md) for the bridge's full architecture; this comparison just highlights why the translation is unusually clean - both are wire formats for the same PACE data model.
+The basic LV frame set here is the one Battery-Emulator's `PYLON-LV-CAN` inverter module sends: `0x351` (charge voltage and current limits), `0x355` (SoC, SoH), `0x356` (voltage, current, temperature), `0x359` (alarms), `0x35C` (charge and discharge enable) and `0x35E` (name).
+
+See [08-bridge-implementation.md](08-bridge-implementation.md) for the bridge's full architecture; this comparison just highlights why the pack-level translation is clean.
 
 ## See also
 
