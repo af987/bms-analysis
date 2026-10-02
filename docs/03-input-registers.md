@@ -75,7 +75,7 @@ ASCII view: `XXXXXXXXXX          ......................`
 | 13 | 4 | Battery capacity (calibrated) | 0.01 Ah units, big-endian uint32 (e.g. `0x00004BC0` = 19392 = 193.92 Ah - see notes) |
 | 17 | 4 | Design capacity | 0.01 Ah units, uint32 (e.g. `0x000048A8` = 18600 = 186.00 Ah) |
 | 21 | 4 | Remaining capacity | 0.01 Ah units, uint32 (e.g. `0x0000467B` = 18043 = 180.43 Ah) |
-| 25 | 1 | State of Charge | Direct % (e.g. `0x5D` = 93%). It is remaining / calibrated capacity, not remaining / design: Ken's example gives 18043 / 19392 = 93.0%, all 286 Block 2 replies in my 27 September capture had SoC = round(100 x remaining / calibrated), and the 90-hour G3 capture agrees (mean difference 0.004%). |
+| 25 | 1 | State of Charge | Direct % (e.g. `0x5D` = 93%). It is remaining / calibrated capacity, not remaining / design: Ken's example gives 18043 / 19392 = 93.0%, all 286 Block 2 replies in my 27 September capture had SoC = round(100 x remaining / calibrated), and the 90-hour G3 capture agrees (mean difference 0.004%). A G3 LV doesn't use this SoC for its reserve: the DSP runs its floor check on HR21 (see [02-holding-registers.md](02-holding-registers.md)). The ARM passes Block 2 on for display. An emulator should send the same SoC in both. |
 | 26 | 1 | (unknown / `0x00`) | Not part of SoC: the firmware copies it as a separate byte (offsets 26-34 are a 9-byte copy, see the source mapping below). |
 | 27 | 2 | Status | Most likely a status bit-field. During calibration, Bit 2 changes at min SoC and max SoC.  Bit 3 changes at min SoC.  Bit 4 appears to indicate charge direction. |
 | 29 | 2 | Status | Normally zero, bit 5 goes high at min SoC during calibration. |
