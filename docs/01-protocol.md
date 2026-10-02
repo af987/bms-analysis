@@ -23,11 +23,11 @@ The BMS firmware implements only **three** Modbus function codes:
 |---|---|---|---|
 | `0x03` | Read Holding Registers | inverter -> BMS | Status / config registers (HR poll) |
 | `0x04` | Read Input Registers | inverter -> BMS | Telemetry registers (cells, capacities, temps) |
-| `0x06` | Write Single Holding Register | inverter -> BMS | Mode-change commands (rare; not seen in steady-state polling) |
+| `0x06` | Write Single Holding Register | inverter -> BMS | Mode-change commands (not seen in any capture so far) |
 
 Any other FC produces a Modbus exception response with code `1` ("Illegal Function"). This was confirmed by static analysis of the BMS firmware (the dispatcher hard-codes a `cmp #3 / cmp #4 / cmp #6` chain before defaulting to the exception path).
 
-Maximum register count per request is `0x80` (128). Exceeding this returns exception code `2` for FC=3 or `4` for FC=4.
+Maximum register count per request is `0x80` (128). Exceeding this returns exception code `2` for FC=3. For FC=4 the FC=4 handler has a tighter check of its own: at most 60 registers, within one 60-register block. A request that fails it gets a short non-standard reply rather than a normal exception (see [03-input-registers.md](03-input-registers.md#validation-envelope-firmware-imposed)).
 
 ## CRC
 
@@ -79,7 +79,7 @@ The IR-poll response does **not** include a byte_count field. Instead, it echoes
 
 Data length is implicit from the request's count x 2.
 
-This is the most important pitfall for emulator implementations. **A stock Modbus library will produce standard FC=4 responses with byte_count, which the inverter will reject** (CRC mismatch because the byte at offset 2 differs from what the inverter computed).
+This is the most important pitfall for emulator implementations. **A stock Modbus library will produce standard FC=4 responses with byte_count, which the inverter will reject.** On a G3 LV the DSP works out the reply length from its own request, `(count + 3) x 2` bytes for FC=4, which is one byte more than a standard reply. A standard reply never reaches that length and is dropped at the next poll (see [05-inverter-firmware.md](05-inverter-firmware.md#reply-acceptance)).
 
 ### Confirming the format
 
@@ -96,7 +96,7 @@ FC=3 (HR) responses **do** use the standard format with byte_count - only FC=4 d
 
 FC=6 responses echo the request frame back unchanged (standard Modbus behaviour for write-single).
 
-Only seen at boot or during user-initiated mode changes (charge enable, BMS reset, force-charge); not in steady-state polling. Read-only emulators must still recognise FC=6 requests and produce the echo response or the inverter's command will retry indefinitely.
+No FC=6 request appears in Ken's capture, the joined data of the 90-hour G3 capture or my own G3 captures (26 to 29 September 2026). The G3 LV DSP can send FC=6 writes to BMS registers 1 to 4 on internal counters, and it ignores the reply: it accepts only FC=3 and FC=4 replies, so an echo is neither needed nor harmful on a G3. An emulator should still answer FC=6 with the echo, since the BMS does. An earlier version of this page said the inverter retries indefinitely without the echo; I have found no capture or firmware evidence for that, and on a G3 it is not the case.
 
 ## Direction handling
 
