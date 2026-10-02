@@ -109,7 +109,7 @@ Device 1 carries the Seplos data. Devices 2 to 5 return the absent-device patter
 | Block 3, max and min temperature | 0.1 °C, signed | PIA max and min cell temperature, minus 2731 |
 | Block 3, max and min cell voltage | mV | PIA max and min cell voltage, same units |
 
-The inverter stops discharging when the Block 2 SoC reaches its 4% floor (see [06-wire-captures.md](06-wire-captures.md#discharge-stops-at-the-4-soc-floor)). With the Seplos SoC passed through unchanged, the floor is 4% of 628 Ah, about 25 Ah. The emulator can rescale SoC if a larger reserve is wanted, e.g. report `(SoC - 10) / 0.9` so that the inverter's 4% sits at about 14% real SoC.
+The inverter stops discharging when the SoC in HR21 reaches its 4% floor; the G3 LV DSP takes its SoC from HR21, not from IR Block 2 (see [07-emulator-implications.md](07-emulator-implications.md#common-pitfalls)). Send the same SoC in both. With the Seplos SoC passed through unchanged, the floor is 4% of 628 Ah, about 25 Ah. The emulator can rescale SoC if a larger reserve is wanted, e.g. report `(SoC - 10) / 0.9` so that the inverter's 4% sits at about 14% real SoC.
 
 ## Timing
 
