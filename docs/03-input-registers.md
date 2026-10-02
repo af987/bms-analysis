@@ -8,7 +8,7 @@ The inverter polls input registers from each battery (devices 1..5) using FC=4 r
 | Block 2 | `0x0015` | 19 regs | Cell count, cycles, pack voltage, capacities, SoC, firmware version |
 | Block 3 | `0x0028` | 20 regs | Per-cell voltages + max/min temperature + max/min cell voltage |
 
-The blocks are not contiguous: there's a gap at register `0x003C` and beyond (not polled).
+The three blocks are contiguous and together cover registers `0x0000`-`0x003B`. Nothing at `0x003C` or above is polled.
 
 ## Wire format
 
@@ -18,9 +18,9 @@ The blocks are not contiguous: there's a gap at register `0x003C` and beyond (no
 
 | Metric | Value |
 |---|---|
-| IR poll interval (per query) | ~10-12 seconds between repetitions of the same query |
-| Full device x block sweep | ~3 minutes for 5 devices x 3 blocks |
-| Per-block interval on a G3 (90-hour capture) | Block 1 about every 10.5 s per device; Blocks 2 and 3 about every 200 s per device |
+| IR poll interval | one IR query about every 10 s (any device, any block) |
+| Full device x block sweep | ~3 minutes for 5 devices x 3 blocks (about 200 s on a G3) |
+| Order on a G3 (90-hour capture and mine) | one device at a time: Block 1, Block 1 again, Block 2, Block 3, about 10 s apart, then the next device. So each device gets Block 1 twice (10 s apart) and Blocks 2 and 3 once in every ~200 s sweep, and Block 1 averages one read per ~100 s per device |
 | BMS turnaround latency | 84-89 ms (faster than HR because responses are smaller) |
 | Devices polled | 1, 2, 3, 4, 5 (all five regardless of which are populated) |
 
@@ -36,8 +36,8 @@ The inverter polls all five potential device addresses (1..5) regardless of how 
 
 | Reg | Offset | Bytes | Field | Notes |
 |---:|---:|---:|---|---|
-| 0 | 0 | 20 | Serial number (ASCII, padded with spaces, NUL-terminated) | e.g. `XXXXXXXXXX` followed by 9 spaces and a NUL |
-| 10 | 20 | 2 | (unknown / 0x0000) | Always observed as zero |
+| 0 | 0 | 20 | Serial number (ASCII, padded with spaces) | e.g. `XXXXXXXXXX` followed by 10 spaces |
+| 10 | 20 | 2 | (unknown / 0x0000) | Always observed as zero. Byte 20 is the last byte of the firmware's 21-byte serial copy (a NUL), byte 21 is a constant 0 (see the source mapping below) |
 | 11 | 22 | 2 | Cell Temp 1 | 0.1 degC big-endian (e.g. `0x00AB` = 17.1 degC). See "Temperature encoding" note below. |
 | 12 | 24 | 2 | Cell Temp 2 | 0.1 degC big-endian |
 | 13 | 26 | 2 | Cell Temp 3 | 0.1 degC big-endian |
@@ -47,7 +47,7 @@ The inverter polls all five potential device addresses (1..5) regardless of how 
 | 17 | 34 | 2 | (unknown, observed `0x0008`) | Possibly USB / accessory presence flag |
 | 18 | 36 | 6 | (unknown, all zero) | Reserved / unused |
 
-> **Temperature encoding**: the BMS firmware applies `subw r1, r1, #0xAAA` (i.e. subtract 2730) to each of the 5 temperature halfwords just before writing them to the TX buffer (flash addresses 0x0800_DF8C, 0x0800_DF98, 0x0800_DFA4, 0x0800_DFB0, 0x0800_DFBC). Internally the values are stored as `(decidegC + 2730)` - a positive-offset representation. The subw removes the bias before TX, so the **wire bytes are raw decidegC**, signed (negative temperatures will appear as 2's-complement int16). No decoder transform needed. The "absent device" `0xF556` sentinel is a natural side effect of the same encoding (see absent-device section).
+> **Temperature encoding**: the BMS firmware applies `subw r1, r1, #0xAAA` (i.e. subtract 2730) to each of the 5 temperature halfwords just before writing them to the TX buffer (flash addresses 0x0801_DF8C, 0x0801_DF98, 0x0801_DFA4, 0x0801_DFB0, 0x0801_DFBC, with the image at its load address 0x0801_0000; see the note on addresses under Methodology below). Internally the values are stored as `(decidegC + 2730)` - a positive-offset representation. The subw removes the bias before TX, so the **wire bytes are raw decidegC**, signed (negative temperatures will appear as 2's-complement int16). No decoder transform needed. The "absent device" `0xF556` sentinel is a natural side effect of the same encoding (see absent-device section).
 
 Example response data (device 1 in cold_start.log, capture time 07:23:51):
 
@@ -69,19 +69,14 @@ ASCII view: `XXXXXXXXXX          ......................`
 |---:|---:|---|---|
 | 0 | 1 | Number of cells | Hex digit; `0x10` = 16 cells |
 | 1 | 2 | Number of battery cycles | Big-endian uint16 (e.g. `0x02E1` = 737 cycles) |
-| 3 | 2 | (unknown / `0x0000`) | |
-| 5 | 2 | possibly min pack voltage? | Possibly a voltage in mV (e.g. `0xCD33` = 52.531 V if interpreted as 0.001 V scale). Seems to track min cell voltage * 16, i.e. voltage pack would be if all cells had same voltage as min cell. |
-| 7 | 2 | possibly max pack voltage? | Likely 0.001 V scale (e.g. `0xCF85` = 53.125 V). Seems to track max cell voltage * 16, i.e. voltage pack would be if all cells had same voltage as max cell. |
-| 9 | 2 | (unknown, mostly 0xFF / variable). | Oscillates between 0x0000 and 0xFFFF.  Might be 0xFFFF during discharge, 0x0000 during charge? |
-| 11 | 2 | Pack current in mA | negative values = discharge, positive = charge (0.001A units) |
-| 13 | 2 | (unknown / `0x0000`) |
-| 15 | 2 | Battery capacity (calibrated) | 0.01 Ah units, big-endian (e.g. `0x4BC0` = 19392 = 193.92 Ah - see notes) |
-| 17 | 2 | (unknown / `0x0000`) | |
-| 19 | 2 | Design capacity | 0.01 Ah units (e.g. `0x48A8` = 18600 = 186.00 Ah) |
-| 21 | 2 | (unknown / `0x0000`) | |
-| 23 | 2 | Remaining capacity | 0.01 Ah units (e.g. `0x467B` = 18043 = 180.43 Ah) |
-| 25 | 1 | State of Charge | Direct % (e.g. `0x5D` = 93%) |
-| 26 | 1 | (unknown / `0x00`) | Possibly unused, possibly 2nd byte of offset 25? |
+| 3 | 4 | A pack voltage in mV (unconfirmed) | Big-endian uint32 (the firmware copies a 32-bit value here, see the source mapping below), e.g. `0x0000CD33` = 52.531 V. Ken read the low half as "min cell voltage x 16". My captures don't fit that: it ran a median 0.11 V above the lowest cell x 16, and within about 0.3 V of offset 7 and of the highest cell x 16. Meaning not settled. |
+| 7 | 2 | Pack voltage | mV, big-endian (e.g. `0xCF85` = 53.125 V). Equals the sum of the 16 cell voltages in Block 3 (median difference 0 mV across 286 Block 2 / Block 3 pairs in my 27 September capture). Ken read it as "max cell voltage x 16". |
+| 9 | 4 | Pack current | Signed 32-bit big-endian, mA. Negative = discharge, positive = charge. Ken's example `FF FF FF 35` = -203 mA. The top half is `0xFFFF` while discharging, `0x0000` while charging, and `0xFFFE` below -65.536 A (my battery reached -70.209 A), so a decoder must read all 4 bytes. |
+| 13 | 4 | Battery capacity (calibrated) | 0.01 Ah units, big-endian uint32 (e.g. `0x00004BC0` = 19392 = 193.92 Ah - see notes) |
+| 17 | 4 | Design capacity | 0.01 Ah units, uint32 (e.g. `0x000048A8` = 18600 = 186.00 Ah) |
+| 21 | 4 | Remaining capacity | 0.01 Ah units, uint32 (e.g. `0x0000467B` = 18043 = 180.43 Ah) |
+| 25 | 1 | State of Charge | Direct % (e.g. `0x5D` = 93%). It is remaining / calibrated capacity, not remaining / design: Ken's example gives 18043 / 19392 = 93.0%, all 286 Block 2 replies in my 27 September capture had SoC = round(100 x remaining / calibrated), and the 90-hour G3 capture agrees (mean difference 0.004%). |
+| 26 | 1 | (unknown / `0x00`) | Not part of SoC: the firmware copies it as a separate byte (offsets 26-34 are a 9-byte copy, see the source mapping below). |
 | 27 | 2 | Status | Most likely a status bit-field. During calibration, Bit 2 changes at min SoC and max SoC.  Bit 3 changes at min SoC.  Bit 4 appears to indicate charge direction. |
 | 29 | 2 | Status | Normally zero, bit 5 goes high at min SoC during calibration. |
 | 31 | 2 | Status | Bit 1&2 briefly high at max SoC during calibration. |
@@ -89,9 +84,9 @@ ASCII view: `XXXXXXXXXX          ......................`
 | 35 | 2 | BMS firmware version | E.g. `0x0BCE` = 3022 |
 | 37 | 1 | (unknown / `0x00`) | |
 
-> This block is not fully aligned.  It is unclear where the alignment changes between registers 25 - 35 (if it does).  It may be that fields should be at offsets 27, 29, 31, 33 in table above.
+> This block is not aligned to registers: the 1-byte cell count at offset 0 shifts every later field by one byte. Offsets 26-34 are a straight 9-byte copy from the firmware's per-pack struct (see the source mapping below), so the BMS doesn't treat them as big-endian 16-bit fields. The 16-bit status grouping above (offsets 27, 29, 31, 33) is a reading of the wire data only. On my battery the bytes at offsets 26-34 were `00 00 06 10 00 00 00 00 00` at rest (about -1 A) or charging and `00 00 0e 10 ...` while discharging, which fits Ken's "bit 4 appears to indicate charge direction".
 
-> **Note**: capacity unit: Ken's [NOTES.md](../NOTES.md) initially documented these as mAh, then corrected to deci-Ah, should be centi-Ah. So `0x48A8` = 18600 in raw units = **186.00 Ah** when interpreted as 0.01 Ah.
+> **Note**: capacity unit: Ken's [NOTES.md](../NOTES.md) initially documented these as mAh, then corrected to deci-Ah, should be centi-Ah. So `0x48A8` = 18600 in raw units = **186.00 Ah** when interpreted as 0.01 Ah. The calibrated capacity can be above the design capacity: the 9.5 kWh battery in the 90-hour G3 capture (BMS firmware 4009) reported 200.00 Ah calibrated and 186.00 Ah design throughout. My 8.2 kWh battery (BMS firmware 3020) reports 147.66 Ah calibrated and 160.00 Ah design.
 
 Example (device 1 in cold_start.log):
 
@@ -111,12 +106,12 @@ a8 00 00 46 7b 5d 00 00 0e 10 00 00 00 00 00 0b ce 00
 | 40 | 0 | 32 | 16 cell voltages | Each cell = 2 bytes big-endian, **raw mV**, no offset. E.g. `0x0D07` = 3335 mV. |
 | 56 | 32 | 2 | Max cell temp | 0.1 °C, signed. The inverter reports this unchanged as its battery `t_max`. |
 | 57 | 34 | 2 | Min cell temp | 0.1 °C, signed. The inverter reports this unchanged as its battery `t_min`. |
-| 58 | 36 | 2 | Max cell voltage | Raw mV. `0x0D09` = 3337 mV (slightly higher than highest individual cell). |
+| 58 | 36 | 2 | Max cell voltage | Raw mV. `0x0D09` = 3337 mV. In my 27 September capture it equalled the highest of the 16 cells in all 286 replies. |
 | 59 | 38 | 2 | Min cell voltage | Raw mV. `0x0D05` = 3333 mV. |
 
-> **Cell voltage encoding** (per-cell): cell voltages at offsets 0..31 are **raw millivolts** big-endian, 2 bytes per cell, no offset. The 16-cell loop in the FC=4 handler at flash `0x0800_E0A0..0x0800_E0BE` writes them directly without applying any bias.
+> **Cell voltage encoding** (per-cell): cell voltages at offsets 0..31 are **raw millivolts** big-endian, 2 bytes per cell, no offset. The 16-cell loop in the FC=4 handler at flash `0x0801_E0A0..0x0801_E0BE` writes them directly without applying any bias.
 >
-> **Aggregate-field encoding (offsets 32-35)**: these two fields are the max and min temperature in 0.1 °C. The firmware stores temperatures internally as `decidegC + 2730` and applies `subw r1, r1, #0xAAA` at flash 0x0800_E0C0 / 0x0800_E0CE before writing them to TX, so the wire value is plain 0.1 °C. Decoders should read them as signed 0.1 °C and must not add 2730. An earlier version of this note described them as millivolts with a -2730 offset. The 90-hour G3 capture shows they match the inverter's reported `t_max` and `t_min` exactly (see [06-wire-captures.md](06-wire-captures.md#findings-from-a-90-hour-g3-capture)).
+> **Aggregate-field encoding (offsets 32-35)**: these two fields are the max and min temperature in 0.1 °C. The firmware stores temperatures internally as `decidegC + 2730` and applies `subw r1, r1, #0xAAA` at flash 0x0801_E0C0 / 0x0801_E0CE before writing them to TX, so the wire value is plain 0.1 °C. Decoders should read them as signed 0.1 °C and must not add 2730. An earlier version of this note described them as millivolts with a -2730 offset. The 90-hour G3 capture shows they match the inverter's reported `t_max` and `t_min` exactly (see [06-wire-captures.md](06-wire-captures.md#findings-from-a-90-hour-g3-capture)).
 >
 > The **max / min cell voltage at offsets 36-39 are raw mV** (no `subw` applied) - same encoding as the per-cell values.
 >
@@ -131,7 +126,7 @@ Example (device 1 in cold_start.log):
 0c fc 0c f4                                                    ; max=3324 mV, min=3316 mV
 ```
 
-This pack is ~3.31 V/cell - matching giv_tcp's reported "Battery_Cell_X_Voltage": 3.31 type values.
+This pack is ~3.32 V/cell - matching giv_tcp's reported "Battery_Cell_X_Voltage": 3.31 type values.
 
 ## "Absent device" pattern
 
@@ -149,17 +144,17 @@ f5 56 f5 56 f5 56 f5 56 f5 56                                  ; 5 temp slots = 
 
 The `f5 56 f5 56 f5 56 f5 56 f5 56` pattern in the temperature region is distinctive - 5 repetitions of `0xF556` (= 62806 unsigned, or -2730 signed-int16).
 
-This is **not an explicit "no sensor" special value** - it's a natural consequence of the temperature-encoding `subw`. The firmware stores temperatures internally as `(decidegC + 2730)`. For an absent battery slot, the internal value is `0`, so the `subw r1, r1, #0xAAA` at TX produces `0 - 2730 = -2730 = 0xF556` (uint16). An emulator that supports multi-battery mode just emits `0xF556` for empty temp slots without any special-case logic. Same explanation for the `0xF556` at Block 3 max/min slots (those positions are also driven by `subw`'d code paths in the firmware's RAM init / formatting).
+This is **not an explicit "no sensor" special value** - it's a natural consequence of the temperature-encoding `subw`. The firmware stores temperatures internally as `(decidegC + 2730)`. For an absent battery slot, the internal value is `0`, so the `subw r1, r1, #0xAAA` at TX produces `0 - 2730 = -2730 = 0xF556` (uint16). An emulator that supports multi-battery mode just emits `0xF556` for empty temp slots without any special-case logic. Same explanation for the `0xF556` in the Block 3 max/min temperature slots (offsets 32-35), which go through the same `subw`. The max/min cell voltage slots (offsets 36-39) have no `subw` and read 0. My G3 captures and the 90-hour capture show exactly this pattern for devices 2 to 5.
 
 ### Block 2 absent-device response: all zeros (38 bytes)
 
 ### Block 3 absent-device response (40 bytes data):
 
 ```
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    ; cells = 0
-00 00 00 00 00 00 00 00 00 00 00 00                            ; reserved
-f5 56 f5 56                                                    ; max/min = 0xF556 each
-00 00 00 00                                                    ; reserved
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    ; cells 1-10 = 0
+00 00 00 00 00 00 00 00 00 00 00 00                            ; cells 11-16 = 0
+f5 56 f5 56                                                    ; max/min temp = 0xF556 each
+00 00 00 00                                                    ; max/min cell voltage = 0
 ```
 
 Important for emulators that want to support multi-battery configurations: if you only emulate one battery at device 1, the inverter will still poll devices 2-5. Either respond with the absent-device pattern (cleanest), or don't respond at all (the bus times out, then HR resumes).
@@ -198,9 +193,9 @@ Multi-byte fields are stored **little-endian** in the per-pack struct and emitte
 |---:|---|---|
 | 0     | pack[0x2C] | byte (cell count per docs/03) |
 | 1-2   | pack[0x2D .. 0x2E] u16 LE | byte-swap to BE (cycles) |
-| 3-6   | pack[0x2F .. 0x32] u32 LE | byte-swap to BE |
+| 3-6   | pack[0x2F .. 0x32] u32 LE | byte-swap to BE (a voltage in mV, meaning unconfirmed) |
 | 7-8   | pack[0x33 .. 0x34] u16 LE | byte-swap to BE (pack voltage) |
-| 9-12  | pack[0x35 .. 0x38] u32 LE | byte-swap to BE |
+| 9-12  | pack[0x35 .. 0x38] u32 LE | byte-swap to BE (pack current, signed mA) |
 | 13-16 | pack[0x39 .. 0x3C] u32 LE | byte-swap to BE (calibrated capacity) |
 | 17-20 | pack[0x3D .. 0x40] u32 LE | byte-swap to BE (design capacity) |
 | 21-24 | pack[0x41 .. 0x44] u32 LE | byte-swap to BE (remaining capacity) |
@@ -226,13 +221,13 @@ The handler rejects requests where:
 - `count == 0` or `count > 60` (0x3C)
 - `start + count` would cross a 60-register block boundary
 
-A request that fails validation produces a Modbus exception response (`device | 0x84 | CRC`). All three documented blocks (0/21, 0x15/19, 0x28/20) fall inside their respective 60-byte sub-block, so legitimate inverter polls always pass.
+A request that fails validation doesn't get a normal Modbus exception. From the disassembly (`0x0801_E0FC`, not run), the handler sends a 4-byte frame: the device, the FC byte it was called with (`0x04`, or `0x84` when the dispatcher has already flagged a count above 0x80), and a CRC computed over the device byte alone, so a standard receiver would reject it. All three documented blocks (0/21, 0x15/19, 0x28/20) fall inside their respective 60-register sub-block, so legitimate inverter polls always pass. A start address of 60 or more takes a separate path in the handler (`0x0801_E128`), which I haven't traced.
 
 ### Methodology
 
-Confirmed by driving the BMS firmware's FC=4 handler (`fc4_handler` at flash `0x0801DEBC`) directly under Unicorn Engine. For each block, the per-pack struct was pre-populated with distinctive markers at every byte position, the handler was invoked with R0 = RX-frame pointer (0x2000385C) and R1 = FC byte (4), and the resulting TX-buffer bytes at 0x200038C0 were compared against expected marker positions. The handler's slot-index logic was independently verified by populating multiple slots with different markers and varying the device byte in the RX frame.
+Confirmed by driving the BMS firmware's FC=4 handler (`fc4_handler`) directly under Unicorn Engine. For each block, the per-pack struct was pre-populated with distinctive markers at every byte position, the handler was invoked with R0 = RX-frame pointer (0x2000385C) and R1 = FC byte (4), and the resulting TX-buffer bytes at 0x200038C0 were compared against expected marker positions. The handler's slot-index logic was independently verified by populating multiple slots with different markers and varying the device byte in the RX frame.
 
-The fc4_handler entry address corrected an earlier off-by-4 noted in the working notes (`0x0801DEB8` -> `0x0801DEBC`); calling at the older address landed inside the preceding function and produced an empty addr-echo response with no body data.
+**A note on addresses.** `BMS_ARM.bin` starts with a 4-byte version header (`CE 0B 66 55`, which holds 3022 = `0x0BCE`) before the vector table, and the vector table puts the image at `0x0801_0000`. With the header stripped and the image at `0x0801_0000`, `fc4_handler` starts at `0x0801_DEB8` (its `push.w` prologue), and the dispatcher branches to it there (`b 0x0801DEB8` at `0x0801_E2FE`). The Unicorn harness loaded the file with its header, which moves every address up by 4, so in the harness the entry was `0x0801_DEBC`, and calling `0x0801_DEB8` landed inside the preceding function. That is where the "off-by-4 correction" in earlier versions of this note came from: both addresses name the same instruction. The addresses elsewhere in this document (the `subw` sites, the cell loop and the bounds check at `0x0801_DF50`) are for the stripped image at `0x0801_0000`, as in [02-holding-registers.md](02-holding-registers.md).
 
 ## Cross-reference
 
