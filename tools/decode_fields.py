@@ -22,6 +22,15 @@ def _s16_be(data: bytes, offset: int) -> int:
     return v - 0x10000 if v >= 0x8000 else v
 
 
+def _u32_be(data: bytes, offset: int) -> int:
+    return (_u16_be(data, offset) << 16) | _u16_be(data, offset + 2)
+
+
+def _s32_be(data: bytes, offset: int) -> int:
+    v = _u32_be(data, offset)
+    return v - 0x100000000 if v >= 0x80000000 else v
+
+
 # HR reg 19 bits (0-indexed) -> (name, evidence level).
 # Names follow the firmware source mapping in docs/02-holding-registers.md.
 # Evidence levels say how far each meaning has been checked against real wire
@@ -124,10 +133,11 @@ def decode_ir_block2(data: bytes) -> Dict[str, Any]:
       Byte   0:    Number of cells (e.g. 0x10 = 16)
       Bytes  1-2:  Cycle count (uint16)
       Bytes  7-8:  Pack voltage, 0.001 V scale = mV (uint16; e.g. 0xCF85 = 53125 mV)
-      Bytes 15-16: Total (calibrated) capacity in 0.01 Ah units / centi-Ah (uint16)
-      Bytes 19-20: Design capacity in 0.01 Ah units / centi-Ah (uint16)
-      Bytes 23-24: Remaining capacity in 0.01 Ah units / centi-Ah (uint16)
-      Byte  25:    State of Charge in percent (0-100)
+      Bytes  9-12: Pack current in mA (int32; negative = discharge)
+      Bytes 13-16: Total (calibrated) capacity in 0.01 Ah units / centi-Ah (uint32)
+      Bytes 17-20: Design capacity in 0.01 Ah units / centi-Ah (uint32)
+      Bytes 21-24: Remaining capacity in 0.01 Ah units / centi-Ah (uint32)
+      Byte  25:    State of Charge in percent (0-100), remaining / total capacity
       Bytes 35-36: BMS firmware version (uint16; e.g. 0x0BCE = 3022)
     """
     if len(data) != 38:
@@ -136,9 +146,10 @@ def decode_ir_block2(data: bytes) -> Dict[str, Any]:
         "cell_count": data[0],
         "cycle_count": _u16_be(data, 1),
         "pack_voltage_mV": _u16_be(data, 7),
-        "total_cap_cAh": _u16_be(data, 15),
-        "design_cap_cAh": _u16_be(data, 19),
-        "remain_cap_cAh": _u16_be(data, 23),
+        "pack_current_mA": _s32_be(data, 9),
+        "total_cap_cAh": _u32_be(data, 13),
+        "design_cap_cAh": _u32_be(data, 17),
+        "remain_cap_cAh": _u32_be(data, 21),
         "soc_pct": data[25],
         "fw_version": _u16_be(data, 35),
     }

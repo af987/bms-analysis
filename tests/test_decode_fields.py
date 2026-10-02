@@ -167,3 +167,25 @@ def test_decode_hr_response_max_temp_is_signed():
     data = bytearray((FIXTURES / "sample_hr_response.bin").read_bytes())
     data[48:50] = (-5 & 0xFFFF).to_bytes(2, "big")
     assert decode_hr_response(bytes(data))["hr24_max_temp_C"] == -5
+
+
+def test_decode_ir_block2_reads_32_bit_capacities_and_signed_current():
+    # Ken's documented example values, plus a capacity above the 16-bit range (a 2-pack bank).
+    data = bytearray(38)
+    data[0] = 16
+    data[9:13] = (0xFFFFFF35).to_bytes(4, "big")  # -203 mA
+    data[13:17] = (125600).to_bytes(4, "big")  # 1256.00 Ah
+    data[17:21] = (18600).to_bytes(4, "big")  # 186.00 Ah
+    data[21:25] = (18043).to_bytes(4, "big")  # 180.43 Ah
+    fields = decode_ir_block2(bytes(data))
+    assert fields["pack_current_mA"] == -203
+    assert fields["total_cap_cAh"] == 125600
+    assert fields["design_cap_cAh"] == 18600
+    assert fields["remain_cap_cAh"] == 18043
+
+
+def test_decode_ir_block2_fixture_capacities_unchanged_by_32_bit_read():
+    data = (FIXTURES / "sample_ir_block2.bin").read_bytes()
+    fields = decode_ir_block2(data)
+    assert fields["total_cap_cAh"] == int.from_bytes(data[15:17], "big")
+    assert fields["remain_cap_cAh"] == int.from_bytes(data[23:25], "big")
