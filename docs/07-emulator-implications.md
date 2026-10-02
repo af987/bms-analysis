@@ -85,7 +85,7 @@ Driven by the inverter:
 | Query | Cadence | Response size |
 |---|---|---:|
 | HR poll (device 1 only) | every ~245 ms (range 231-481 ms) | 61 bytes |
-| IR Block 1 (per device) | about every 10.5 s on a G3 | 48 bytes |
+| IR Block 1 (per device) | twice, 10 s apart, in every ~200 s sweep on a G3 (one IR poll every ~10 s, one device at a time; see [03](03-input-registers.md)) | 48 bytes |
 | IR Block 2 (per device) | about every 200 s on a G3 | 44 bytes |
 | IR Block 3 (per device) | about every 200 s on a G3 | 46 bytes |
 | FC=06 mode-change writes | event-driven (charge enable, BMS reset, force-charge); not steady-state | 8 bytes echo |
@@ -113,7 +113,7 @@ See [02-holding-registers.md](02-holding-registers.md) for full layout. Key valu
 | 15 | `0x0000` | 3-flag composite. A G3 LV ignores bit 0 below 100% SoC, and at 100% bit 0 cancels its "battery full" block, so send 0 |
 | 16 | `0x0000` | Mode/state |
 | 17 | value that changes once per second | A real BMS derives it from its clock, mostly stepping by +1 each second. Incrementing once per second is the closest simple match; whether any inverter checks it is not known. |
-| 18 | `0x389D` | High half of the same clock hash; it changes about every 18 hours. A constant is fine for short runs. |
+| 18 | `0x389D` | High half of the same clock hash; it changes about twice a day (see [02](02-holding-registers.md)). A constant is fine for short runs. |
 | 19 | BMS status (normally `0x00CE` or `0x00CF`) | 8-flag composite, see [02-holding-registers.md](02-holding-registers.md). On a G3 LV, keep bit 2 set (clear forces a charge of at least 300 W), don't leave bits 0 and 1 both clear, and only set bit 5 if you want a small forced discharge |
 | 20 | Alarms | normally `0x0000`, see [02-holding-registers.md](02-holding-registers.md). On a G3 LV, bit 2 stops charging at once and bit 3 cuts the discharge limit to 10% of rated power (see below) |
 | 21 | Battery state of charge (0%-100%) | If returning SoC |
@@ -204,7 +204,7 @@ When the dongle / real inverter is available, end-to-end testing is straightforw
 
 3. **Returning out-of-range cell voltages** - even briefly. The strict variants silently filter and use the previous value, so a single bad poll doesn't get logged - but it also doesn't update. The inverter UI will show stale data, which is confusing to debug.
 
-4. **Forgetting to echo FC=06 writes** - the inverter retries indefinitely on a missing FC=06 ACK. This stalls the bus and HR/IR polling resumes only after the FC=06 retry exits.
+4. **Forgetting to echo FC=06 writes** - echo them unchanged, as the real battery does. A G3's DSP sends its FC=06 writes on counters and doesn't act on the reply ([05](05-inverter-firmware.md)), and none appeared in over two million frames of my G3 captures, so a missing echo is unlikely to matter on a G3. Other variants are unconfirmed.
 
 5. **Treating the SoC as display only** - the inverter stops discharging when the SoC in HR21 reaches its 4% floor. The G3 LV DSP stores HR21's low byte as its SoC (`0xD506`) and runs its floor check on that, not on the IR Block 2 SoC. If an emulator passes through a third-party battery's SoC, that value decides how deeply the battery is discharged. Scale it if 4% on the inverter should leave a margin above the battery's own cut-off, and keep HR21 and the Block 2 SoC the same. HR21 is polled every ~245 ms, so the stop is quick: in a forced discharge at about 71 A, mine stopped within about a second of HR21 reading 4%, and in the 90-hour G3 capture the current reached zero 0.5 to 5.3 s after HR21 first read 4%. The BMS itself doesn't soften the stop - HR27 (discharge limit) and HR20 (alarms) stayed unchanged all the way down to 4% - so an emulator can't rely on the BMS tapering current near the floor; the inverter is the only thing enforcing it, from whatever SoC field it reads. See [06-wire-captures.md](06-wire-captures.md#discharge-stops-at-the-4-soc-floor) and [06-wire-captures.md](06-wire-captures.md#discharge-to-the-reserve-and-a-full-charge-27-29-september).
 

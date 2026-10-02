@@ -116,7 +116,7 @@ The inverter stops discharging when the SoC in HR21 reaches its 4% floor; the G3
 The two sides run separately. One task polls the Seplos about once a second and stores the latest decoded values with a timestamp. The other task answers the inverter from those stored values.
 
 - The inverter polls HR every 240 ms and expects an answer in about 100 ms (see [06-wire-captures.md](06-wire-captures.md)). The answering task must never wait on a Seplos read.
-- IR Block 1 comes about every 10.5 s per device, and Blocks 2 and 3 about every 200 s. Any Seplos poll rate of 1 Hz or faster keeps them fresh.
+- IR Block 1 comes twice (10 s apart) per device in every ~200 s sweep, and Blocks 2 and 3 once per sweep. Any Seplos poll rate of 1 Hz or faster keeps them fresh.
 
 ## Failure behaviour
 
