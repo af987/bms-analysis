@@ -84,7 +84,7 @@ The GivEnergy BMS only implements **FC=3, FC=4, and FC=6**. Other FCs return a M
 
 **MPPT**: Maximum Power Point Tracker - the circuit that extracts maximum power from a solar panel string by adjusting voltage to match panel characteristics.
 
-**Gen 1 / 2 / 3**: GivEnergy product generations. Different hardware revisions, sometimes different firmware. Same Gen 2 LV battery is compatible with G1, G2, G3 hybrid and AC 3.0 inverters.
+**Gen 1 / 2 / 3**: GivEnergy product generations. Different hardware revisions, sometimes different firmware. Same Gen 2 LV battery is compatible with G1, G2, G3 hybrid and AC 3.0 inverters. GivEnergy's firmware archive files BMS firmware 3017 to 3022 under "Gen1-Gen2" batteries and 4009 to 4011 under "Gen3". Ken's battery runs 3022, mine (an 8.2 kWh) 3020, and the 9.5 kWh battery in the 90-hour G3 capture 4009.
 
 **HV / LV**: High-Voltage / Low-Voltage battery families. LV typically ~48-58 V (single 16-cell LFP pack). HV stacks multiple modules in series for hundreds of volts. **This documentation covers LV only.**
 
@@ -98,7 +98,7 @@ The GivEnergy BMS only implements **FC=3, FC=4, and FC=6**. Other FCs return a M
 
 **STM32**: ST Microelectronics' family of Cortex-M MCUs. The GivEnergy BMS firmware targets STM32F103-class parts.
 
-**DSP**: Digital Signal Processor. A specialised CPU for high-rate signal processing (like power-electronics control loops). The GivEnergy inverters use a TI C2000 DSP for the power-stage control loop, separate from the ARM Cortex-M MCU that handles communications.
+**DSP**: Digital Signal Processor. A specialised CPU for high-rate signal processing (like power-electronics control loops). The GivEnergy inverters use a TI C2000 DSP for the power-stage control loop, alongside an ARM Cortex-M MCU that handles most communications. On a G3 LV the DSP also runs the BMS bus: it is the Modbus master that polls the battery, and it passes the replies to the ARM (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
 
 **USART / UART**: A hardware peripheral that does serial communication. The GivEnergy BMS uses USART3 for the Modbus link to the inverter (over an RS485 transceiver).
 
@@ -108,7 +108,7 @@ The GivEnergy BMS only implements **FC=3, FC=4, and FC=6**. Other FCs return a M
 
 **GPIO**: General-Purpose Input/Output pin. Used for things like RS485 DE/RE control or status LEDs.
 
-**Flash**: Non-volatile memory that holds the firmware. STM32F1xx flash starts at address `0x08000000`.
+**Flash**: Non-volatile memory that holds the firmware. STM32F1xx flash starts at address `0x08000000`. The GivEnergy BMS application image runs at `0x08010000`, above a bootloader.
 
 **SRAM**: Volatile memory used for runtime state. STM32F1xx SRAM starts at `0x20000000`.
 
@@ -134,7 +134,7 @@ The GivEnergy BMS only implements **FC=3, FC=4, and FC=6**. Other FCs return a M
 
 **SunSpec Modbus**: Open battery / inverter Modbus standard maintained by the SunSpec Alliance. Less widely deployed than Pylontech CAN but growing.
 
-**Emulator** (in this project): a device that pretends to be a GivEnergy LV BMS, taking inputs from a different battery's BMS and serving them in GivEnergy's expected format to a GivEnergy inverter. Solves "use a cheaper battery with a GivEnergy inverter".
+**Emulator** (in this project): a device that pretends to be a GivEnergy LV BMS, taking inputs from a different battery's BMS and serving them in GivEnergy's expected format to a GivEnergy inverter. Solves "use a cheaper battery with a GivEnergy inverter". One implementation is a GivEnergy LV RS485 inverter module for Battery-Emulator ([abedegno/Battery-Emulator#1](https://github.com/abedegno/Battery-Emulator/pull/1)), which can sit behind any battery Battery-Emulator reads, such as one on Growatt LV CAN.
 
 **Bridge** (in this project): a device that reads from a real GivEnergy battery and re-presents the data on a standard third-party-inverter protocol (typically Pylontech CAN). Solves "use a GivEnergy battery with a third-party inverter".
 
@@ -142,8 +142,8 @@ The GivEnergy BMS only implements **FC=3, FC=4, and FC=6**. Other FCs return a M
 
 **FC=4 non-standard format**: GivEnergy's BMS uses a custom FC=4 response format that echoes the request's start address in place of the standard byte_count field. Critical for both emulator and bridge implementations - see [01-protocol.md](01-protocol.md).
 
-**HR poll**: The high-rate (~245 ms) FC=3 query the inverter sends to the primary battery for real-time status.
+**HR poll**: The high-rate (~245 ms) FC=3 query the inverter sends to the primary battery (device 1) for real-time status, normally HR0 to HR27. A G3 LV sends a short HR17 to HR25 form instead if its HR109 `enable_bms_read` setting isn't 1.
 
-**IR poll**: The lower-rate FC=4 queries the inverter sends to all batteries for telemetry. Three blocks per battery: Block 1 (regs 0..0x14), Block 2 (regs 0x15..0x27), Block 3 (regs 0x28..0x3C).
+**IR poll**: The lower-rate FC=4 queries the inverter sends to all batteries for telemetry. Three blocks per battery: Block 1 (regs 0..0x14), Block 2 (regs 0x15..0x27), Block 3 (regs 0x28..0x3B).
 
 **"Absent device" pattern**: The distinctive empty response pattern (mostly zeros plus a recurring `f5 56 f5 56...` sequence) returned for device addresses where no battery is physically present but the inverter still polls. See [03-input-registers.md](03-input-registers.md).
