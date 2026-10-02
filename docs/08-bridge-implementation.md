@@ -1,5 +1,7 @@
 # Bridge implementation (GivEnergy battery -> third-party inverter)
 
+> **Status (October 2026): early plan, partly superseded.** This page was written for an earlier plan that bridged over Pylontech CAN with a separate bridge program. Nobody has built this direction yet. My own bridge goes the other way (a third-party battery on a GivEnergy inverter) and is built on Battery-Emulator: its Growatt LV CAN battery reader (`GROWATT-LV-BATTERY`) feeds a GivEnergy LV RS485 inverter module, in [abedegno/Battery-Emulator#1](https://github.com/abedegno/Battery-Emulator/pull/1). For this page's direction the same framework would fit: a Battery-Emulator battery module that polls a GivEnergy BMS could feed any of its existing inverter protocols, including Pylontech LV CAN. The register facts below still hold. The Pylontech CAN details are checked against Battery-Emulator's `PYLON-LV-CAN` inverter module where marked.
+
 Design rules and implementation guidance for a bridge that lets a GivEnergy LV battery work with a non-GivEnergy inverter. This is the dual of the emulator described in [07-emulator-implications.md](07-emulator-implications.md): instead of emulating the BMS toward an inverter, the bridge consumes the real BMS and re-presents it on the standard protocols third-party inverters expect.
 
 ```
@@ -11,7 +13,7 @@ Design rules and implementation guidance for a bridge that lets a GivEnergy LV b
 
 The bridge is a **two-sided protocol translator**:
 
-1. **GivEnergy side (controller)**: poll the BMS using the same protocol the GivEnergy inverter uses. HR poll on device 1 every ~245 ms, IR rotation across devices 1..N every ~10 s. Standard FC=3 framing, non-standard FC=4 framing. See [01-protocol.md](01-protocol.md), [02-holding-registers.md](02-holding-registers.md), [03-input-registers.md](03-input-registers.md).
+1. **GivEnergy side (controller)**: poll the BMS using the same protocol the GivEnergy inverter uses. HR poll on device 1 every ~245 ms, IR rotation across devices 1..N (a G3 reads Block 1 about every 10 s and Blocks 2 and 3 about every 200 s per device). Standard FC=3 framing, non-standard FC=4 framing. See [01-protocol.md](01-protocol.md), [02-holding-registers.md](02-holding-registers.md), [03-input-registers.md](03-input-registers.md).
 
 2. **Inverter side (device / talker)**: present the parsed BMS state in the format the third-party inverter expects. Common targets are listed below.
 
@@ -34,25 +36,28 @@ A 500 kbps CAN bus protocol used by Pylontech US-series batteries. Supported nat
 - **SolaX** (X1 / X3 hybrids)
 - Many cheaper Chinese hybrids advertising "Pylontech compatible"
 
-The Pylontech CAN protocol uses 11-bit standard CAN IDs and broadcasts a fixed set of frames at ~1 Hz. The bridge typically sends:
+The Pylontech CAN protocol uses 11-bit standard CAN IDs and broadcasts a fixed set of frames at ~1 Hz. Battery-Emulator's `PYLON-LV-CAN` inverter module sends six frames once a second, little-endian, and listens for the inverter's `0x305` keepalive:
 
-| Purpose | Notes |
-|---|---|
-| Charge / discharge voltage and current limits | `BatteryChargeVoltage`, `MaxChargeCurrent`, `MaxDischargeCurrent`, `LowVoltageDisconnect` |
-| State of Charge / State of Health | percentage |
-| Pack voltage, current, temperature | absolute values |
-| Battery type / manufacturer name | ASCII strings, often "PYLON" or similar |
-| Protection / warning bit-fields | per-fault flags |
+| ID | Purpose | Units in `PYLON-LV-CAN` |
+|---|---|---|
+| `0x351` | Charge voltage, charge and discharge current limits | 0.1 V, 0.1 A, 0.1 A |
+| `0x355` | State of Charge / State of Health | % |
+| `0x356` | Pack voltage, current, temperature | 0.01 V, 0.1 A, 0.1 deg C |
+| `0x359` | Protection / warning bit-fields, pack count | per-fault flags |
+| `0x35C` | Charge / discharge enable and force-charge request | flags |
+| `0x35E` | Manufacturer name | ASCII, often "PYLON" or similar |
+
+This basic set has no capacity, cell voltage or per-cell temperature fields. Some inverters read extra frames for those; check the target's own documentation.
 
 The exact CAN IDs and field layouts are documented in publicly available Pylontech protocol references (search "Pylontech BMS CAN protocol" - several copies of the original spec are mirrored online). Open-source bridges (e.g. various Victron / OpenInverter projects) are good reference implementations.
 
 **Bridge unit conversion notes:**
 
-- GivEnergy Block 2 capacity values are in 0.01 Ah units (e.g. `0x48A8` = 18600 = 186.00 Ah). Pylontech CAN expects Ah.
-- GivEnergy reg 25 current limit is 0.01 A units (90.00 A). Pylontech CAN expects 0.1 A.
-- Cell voltages from GivEnergy IR Block 3 are raw mV. Pylontech CAN min/max cell voltages are 1 mV units - direct passthrough.
-- SoC from GivEnergy Block 2 byte 25 is direct % - direct passthrough.
-- GivEnergy temperatures in IR Block 1 are 0.1 deg C units. Pylontech CAN uses 0.1 deg C - direct passthrough.
+- GivEnergy Block 2 capacity values are in 0.01 Ah units (e.g. `0x48A8` = 18600 = 186.00 Ah). The basic Pylontech LV frame set has no capacity field.
+- GivEnergy HR25 to HR27 current limits are 0.01 A units. Pylontech CAN `0x351` expects 0.1 A.
+- Cell voltages from GivEnergy IR Block 3 are raw mV. The basic Pylontech LV frame set carries no cell voltages.
+- SoC from GivEnergy Block 2 byte 25 (or HR21) is direct % - direct passthrough.
+- GivEnergy temperatures in IR Block 1 are 0.1 deg C units. Pylontech CAN `0x356` uses 0.1 deg C - direct passthrough.
 
 ### Victron VE.Can / VE.Bus
 
@@ -103,21 +108,22 @@ The polling pattern documented in [06-wire-captures.md](06-wire-captures.md) is 
 | Side | Inherent rate |
 |---|---|
 | GivEnergy HR poll (current source data) | 4 Hz (245 ms cadence) |
-| GivEnergy IR Block 1/2/3 (slower telemetry) | 0.1 Hz per block per device |
+| GivEnergy IR Block 1 (slower telemetry) | about every 10 s per device on a G3 |
+| GivEnergy IR Block 2/3 (slower telemetry) | about every 200 s per device on a G3 |
 | Pylontech CAN broadcasts | 1 Hz typically |
 | Other CAN protocols | 1 Hz typically |
 
-The bridge has plenty of headroom. The real engineering challenge is on data freshness: cell voltages from GivEnergy update only when Block 3 is polled (about once every 10 s per device). For most inverter use cases that is fine. If a third-party inverter expects sub-second cell voltage updates (rare), the bridge should poll Block 3 more aggressively.
+The bridge has plenty of headroom. The real engineering challenge is on data freshness: cell voltages from GivEnergy update only when Block 3 is polled, which a G3 does only about every 200 s per device. The bridge isn't bound by that cadence and can poll Block 3 more often if the target needs fresher cell voltages.
 
 ## Validation envelopes from the third-party side
 
 Different inverter targets have their own validation rules. Common pitfalls:
 
-- **Pylontech CAN protections**: most inverters check the `Pylontech_BatteryChargeVoltage` and `MaxChargeCurrent` for sanity. If they go to 0 unexpectedly, the inverter stops charging. The bridge should derive these from GivEnergy's reg 25 (current limit, 0.01 A units) and the BMS firmware version reported in HR reg 13 (which can be used to look up appropriate per-firmware defaults).
+- **Pylontech CAN protections**: most inverters check the `Pylontech_BatteryChargeVoltage` and `MaxChargeCurrent` for sanity. If they go to 0 unexpectedly, the inverter stops charging. Derive the current limits from HR26 (charge) and HR27 (discharge), not HR25. HR25 stays at its configured value (90.00 A on my battery) while the BMS cuts HR26 to 3.20 A at the top of a charge (see [06-wire-captures.md](06-wire-captures.md#the-limits-during-a-full-charge)). A G3 LV only falls back to HR25 for both limits when HR13 (BMS firmware) is below 3011, so do the same.
 
 - **Manufacturer string expectation**: some inverters reject unrecognised manufacturer strings. Use a string the inverter is known to accept (e.g. "PYLON" or whatever its compatibility documentation lists).
 
-- **Cell voltage range**: Pylontech CAN expects cells in mV in the 2000-4000 range. GivEnergy LFP cells stay well within this. No transformation needed beyond endianness handling (GivEnergy is big-endian on the wire; CAN frames typically little-endian).
+- **Cell voltage range**: where a target protocol carries cell voltages, it usually expects mV. GivEnergy LFP cells need no transformation beyond endianness handling (GivEnergy is big-endian on the wire; CAN frames typically little-endian).
 
 - **No-data timeout**: most inverters mark the battery offline if no CAN frame arrives within a few seconds. Keep the bridge's CAN broadcast loop running even if the GivEnergy poll stalls briefly - send the last known good values with a stale-data flag if the protocol supports it.
 
@@ -130,10 +136,10 @@ Mapping GivEnergy register fields to fields the bridge must produce:
 | GivEnergy field | Bridge mapping |
 |---|---|
 | Reg 13 = firmware version (3022) | optional - some target protocols include a version field |
-| Reg 17 / 18 = device ID (32-bit aggregate) | optional - serial identification |
+| Reg 17 / 18 = hash of the BMS clock (changes every second) | none - not an identifier |
 | Reg 19 = 8-flag composite status | bit-by-bit map to target protocol's protection / warning flags (semantics still partly TBD - see [02-holding-registers.md](02-holding-registers.md)) |
 | Reg 23 = signed primary pack current (0.01 A) | Pylontech CAN: `BatteryCurrent` in 0.1 A. Convert: multiply by number of packs, divide by 10. |
-| Reg 25 = current limit constant (90.00 A) | Pylontech CAN: TBC |
+| Reg 25 = configured current limit (90.00 A on my battery, 150.00 A on a 9.5 kWh battery) | fallback for both limits when HR13 < 3011 |
 | Reg 26 = dynamic charge current limit (0.01 A)| Pylontech CAN: `MaxChargeCurrent` (in 0.1 A). Convert: divide by 10. |
 | Reg 27 = dynamic discharge current limit (0.01 A) | Pylontech CAN: `MaxDischargeCurrent` (in 0.1 A). Convert: divide by 10. |
 
@@ -141,8 +147,8 @@ Mapping GivEnergy register fields to fields the bridge must produce:
 
 | GivEnergy field | Bridge mapping |
 |---|---|
-| Bytes 12-21 = 5 temperatures (0.1 deg C) | aggregate: report min, max, average to the inverter; or expose per-sensor if the target protocol supports it |
-| Bytes 22-23 = some flag | possibly maps to a "balancing active" or "charging accepted" flag |
+| Bytes 22-31 = 5 temperatures (0.1 deg C) | aggregate: report min, max, average to the inverter; or expose per-sensor if the target protocol supports it |
+| Bytes 32-33 = some flag (`0x0001`) | meaning unknown |
 
 ### From IR Block 2
 
@@ -150,17 +156,17 @@ Mapping GivEnergy register fields to fields the bridge must produce:
 |---|---|
 | Byte 0 = cell count | typically passthrough |
 | Bytes 1-2 = cycle count | passthrough |
-| Bytes 7-8 = pack voltage (0.001 V) | Pylontech CAN: `BatteryVoltage` in 0.01 V. Convert: divide by 10. |
-| Bytes 15-16 = calibrated capacity (0.01 Ah) | Pylontech CAN: `RatedCapacity` in 0.1 Ah - divide by 10. |
-| Bytes 19-20 = design capacity (0.01 Ah) | optional - Pylontech CAN reports nominal capacity which is design capacity. |
-| Bytes 23-24 = remaining capacity (0.01 Ah) | useful for SoC calculation: `SoC = remaining / calibrated x 100` |
-| Byte 25 = SoC % | Pylontech CAN: `SoC` direct. |
+| Bytes 7-8 = pack voltage (0.001 V) | Pylontech CAN `0x356` voltage in 0.01 V. Convert: divide by 10. (HR22 gives the same in 0.01 V every 245 ms.) |
+| Bytes 13-16 = calibrated capacity (0.01 Ah, 32-bit) | not in the basic Pylontech LV frame set |
+| Bytes 17-20 = design capacity (0.01 Ah, 32-bit) | not in the basic Pylontech LV frame set |
+| Bytes 21-24 = remaining capacity (0.01 Ah, 32-bit) | useful for SoC calculation: `SoC = remaining / calibrated x 100` (matches byte 25 in my captures and the 9.5 kWh capture) |
+| Byte 25 = SoC % | Pylontech CAN `0x355` SoC, direct. |
 
 ### From IR Block 3
 
 | GivEnergy field | Bridge mapping |
 |---|---|
-| Bytes 0-31 = 16 cell voltages (raw mV BE) | Pylontech CAN: `MinCellVoltage`, `MaxCellVoltage`, `MinCellId`, `MaxCellId`. Bridge computes min/max/index from the array. |
+| Bytes 0-31 = 16 cell voltages (raw mV BE) | for targets that take min/max cell voltage and cell index; the bridge computes them from the array. Not in the basic Pylontech LV frame set. |
 | Bytes 36-37 = max cell voltage | passthrough |
 | Bytes 38-39 = min cell voltage | passthrough |
 
@@ -169,7 +175,7 @@ Mapping GivEnergy register fields to fields the bridge must produce:
 GivEnergy supports up to 5 paralleled batteries (devices 1..5). The bridge has two strategies:
 
 - **Aggregate** all batteries into one virtual "stack" presented to the inverter. Sum currents and capacities; report worst-case cell voltages and temperatures; use the lowest SoC. This is the most compatible approach (third-party inverters expect a single battery interface).
-- **Pass-through per-battery** if the target protocol supports multi-battery (e.g. some Pylontech CAN modes do). More accurate but rarely needed.
+- **Pass-through per-battery** if the target protocol supports multi-battery. More accurate but rarely needed.
 
 The aggregate approach is recommended for first implementations.
 
