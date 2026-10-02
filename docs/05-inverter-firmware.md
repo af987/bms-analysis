@@ -6,12 +6,12 @@ The GivEnergy inverter firmware can also be statically analysed. The most import
 
 ## The invariant
 
-The same GivEnergy Gen 2 LV BMS works with:
+The same GivEnergy Gen 1 / Gen 2 LV BMS works with:
 
 - AC 3.0 inverters
 - Gen 1 Hybrid inverters
 - Gen 2 Hybrid inverters
-- Gen 3 Hybrid (FA-series) inverters
+- Gen 3 Hybrid LV inverters (A316/D316)
 
 Since the BMS firmware (`BMS_ARM.bin` v3017/3020/3022) implements one Modbus dialect, every compatible inverter must speak that same wire protocol or the BMS won't respond. **The wire protocol is the constant; inverter firmware variations are an internal-implementation concern that doesn't reach the wire.**
 
@@ -23,13 +23,13 @@ Static analysis covered the ARM firmware for several variants:
 
 | Variant | Firmware files | Architecture |
 |---|---|---|
-| FA-series (Gen 3 Hybrid) | `FA_A1_xx.bin` (256 KB) + `FA_A2_xx.bin` (17 KB) + `FA_D1_xx.bin` | 3-MCU: ARM1 + ARM2 + DSP |
+| FA-series ("PV String Inverter Gen3") | `FA_A1_xx.bin` (256 KB) + `FA_A2_xx.bin` (17 KB) + `FA_D1_xx.bin` | 3-MCU: ARM1 + ARM2 + DSP |
 | A316 / Hybrid Gen 3 LV | `ARMStore.bin` (145 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
+| A920/A921/A922 / Hybrid Gen 2 | `ARMStore.bin` (126 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
+| A214/D212 / AC Coupled | `ARMStore.bin` (118 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
+| AC 3.0 | (not identified separately) | unknown, but compatible with same BMS |
 
-The community firmware archive files the A316-D316 package under "Hybrid Gen3 LV" and the FA packages under "PV String Inverter Gen3". Earlier versions of this table called A316 a Gen 1/2 hybrid. The FA label has not been rechecked.
-| A920/A921/A922 / AIO | `ARMStore.bin` (126 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
-| A214/D212 (older) | `ARMStore.bin` (118 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
-| AC 3.0 | (not yet analysed) | unknown, but compatible with same BMS |
+The labels in the first column follow the folders of the community firmware archive: "Hybrid Gen3 LV" (A316-D316, A318, A319), "Hybrid Gen2" (A920 to A922), "Hybrid Gen1" (A187), "AC Coupled" (A212, A214) and "PV String Inverter Gen3" (the FA packages). Earlier versions of this table called A316 a Gen 1/2 hybrid, FA the Gen 3 hybrid and A920 to A922 the AIO. Whether the FA firmware is used with LV batteries at all has not been rechecked.
 
 All ARM firmwares analysed contain:
 
@@ -122,7 +122,7 @@ A316 contains **three** Modbus controller code paths on USART2:
 2. **5-device non-sequential rotation** (devices 1, 5, 6, 7, 8) doing FC=4 with count=2 over a 17-entry register-address table - purpose unclear, possibly HV expansion or parallel-inverter sense.
 3. **LV-battery polling state machine at flash `0x08026C40`** (sole caller `0x08027440`). Despite being grouped here, this path does not use USART2: its requests go to the DSP over UART4 (see below). 4-state, 5-device 1..5 sequential rotation, FC=4 only, addr/count = 0x0000/21, 0x0015/19, 0x0028/20. Gated by 500-tick cadence counter at SRAM `0x200000DE`. Stages request frame at SRAM `0x2000070A + 0x84..+0x89`. RX parser at `0x08026EBC` reads response data from struct offset +6 (consistent with the BMS's non-standard FC=4 framing). Per-device decoded state at SRAM `0x200007A4 + (device_idx * 131)`.
 
-**Path 3 is the LV battery path.** It produces the IR Block 1/2/3 polls Ken sees on his AC 3.0 wire captures.
+**Path 3 is the LV battery path.** It asks for the same IR Block 1/2/3 polls that Ken's AC 3.0 captures show, and that the G3 captures in [06-wire-captures.md](06-wire-captures.md) show on a Hybrid Gen 3 LV.
 
 **No FC=3 HR poll in the A316 ARM firmware.** The HR poll lives on the DSP (`DSPStore.bin`), confirmed in 2026-09. See below.
 
