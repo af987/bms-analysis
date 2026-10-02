@@ -124,11 +124,11 @@ The wire timestamps in this capture are local time (BST) that was labelled as UT
 | Query | Interval per device |
 |---|---|
 | HR poll (device 1, FC=3, start 0, count 28) | 240 ms, with occasional gaps of 480 ms |
-| IR Block 1 (FC=4, start 0x0000, count 21) | about 10.5 s |
+| IR Block 1 (FC=4, start 0x0000, count 21) | twice, 10 s apart, every 200 s (100 s on average) |
 | IR Block 2 (FC=4, start 0x0015, count 19) | about 200 s |
 | IR Block 3 (FC=4, start 0x0028, count 20) | about 200 s |
 
-The inverter polls devices 2 to 5 as well, and with one battery fitted those slots return the absent-device pattern.
+The inverter sends one FC=4 request about every 10 s, in the order Block 1, Block 1, Block 2, Block 3 for each device in turn. It polls devices 2 to 5 as well, and with one battery fitted those slots return the absent-device pattern.
 
 ### The inverter reports the BMS values unchanged
 
@@ -155,13 +155,45 @@ So an emulator controls what the inverter and the GivEnergy app show by setting 
 
 ### Discharge stops at the 4% SoC floor
 
-GivEnergy inverters stop discharging at 4% SoC. Discharge stopped twice in this capture, at 18:20 UTC on 21 August and at 17:59 UTC on 24 August. The last SoC readings from IR Block 2 before each stop were 9, 7, 5% and 10, 8, 5%, falling about 2% per 200 s reading. So SoC reached 4% between the last reading and the stop. The inverter uses the SoC that the BMS sends in IR Block 2 to decide when to stop.
+GivEnergy inverters stop discharging at 4% SoC. Discharge stopped twice in this capture, at 18:20 UTC on 21 August and at 17:59 UTC on 24 August. The last SoC readings from IR Block 2 before each stop were 9, 7, 5% and 10, 8, 5%, falling about 2% per 200 s reading. HR21 shows the moment: it first read 4% at 18:19:56 and 17:58:57, and the current was zero 6 s and 1 s later. The G3 LV DSP takes its SoC from HR21 and blocks discharge after 5 s at or below the floor (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)), which fits.
 
-At the same poll that the current dropped to zero, HR19 bit 3 (0-indexed) started switching between set and clear on almost every poll. HR19 moved between 206 and 198, or between 207 and 199. The lowest cell was then between 2966 and 3039 mV. The switching continued until the battery next charged, about 8 hours later on 21 August and about 70 minutes later on 24 August. During normal discharge HR19 was always 207. The switching started after the stop, not before, so it doesn't look like the reason the inverter stopped. It matches Ken's note that bit 4 (1-indexed) "oscillates below 4% SOC".
+At the same poll that the current dropped to zero, HR19 bit 3 (0-indexed) started switching between set and clear on almost every poll. HR19 moved between 206 and 198, or between 207 and 199. The lowest cell was then between 2951 and 3039 mV. The switching continued until the battery next charged, about 8 hours later on 21 August and about 70 minutes later on 24 August. During normal discharge HR19 was always 207. The switching started after the stop, not before, so it doesn't look like the reason the inverter stopped. It matches Ken's note that bit 4 (1-indexed) "oscillates below 4% SOC".
 
-### Gaps in this capture
+### The 9.5 kWh battery's registers and limits
 
-The joined parquet file doesn't include HR20, HR21, HR22, HR24, HR26 or HR27, because the decoder didn't extract them when it was made. The decoder now does, so rerunning `join_streams.py` on the raw wire log adds them.
+@af987 contributed this capture in PR #14, and the joined file is in the repo as [captures/G3_HY_3_6_G3_9_5/joined.parquet.redacted](../captures/G3_HY_3_6_G3_9_5/). Its timestamps are already corrected: HR23 against the inverter's battery current gives a correlation of 0.998, or 0.999 with a 2 s lag. It now has all of HR0 to HR27, so the earlier gap (no HR20 to HR27) is closed. These are the values I found in it. The battery is a Gen 3 9.5 kWh, which is a different BMS firmware family from mine.
+
+| Field | Value in this capture |
+|---|---|
+| HR13 and IR Block 2 firmware version | 4009 |
+| HR11 | 186 throughout |
+| HR12 | 48 throughout, the same as my 3020 battery |
+| IR Block 2 capacities | total (calibrated) 200.00 Ah, design 186.00 Ah, remaining 7.48 Ah to 191.72 Ah; 464 to 468 cycles |
+| HR25 | 150.00 A throughout |
+| HR14, HR16, HR20 | 0 throughout. HR20 never set a bit, but the battery never reached 100% either |
+| HR15 | 1 in 95% of polls, both charging and discharging. It was 0 for three stretches of about 10 minutes and one of about 4 hours on 24 August, and for one minute on 22 August |
+| HR17, HR18 | HR17 changed 322,727 times in 323,009 s. HR18 changed only at about 02:05 and 04:05 UTC each day. Both fit the clock hash in [02-holding-registers.md](02-holding-registers.md) |
+| HR19 | `0xCF` and `0xCE` in normal running, `0xC6` and `0xC7` at the SoC floor (see above), plus 13 polls of `0xC5` or `0xCD` at zero current |
+| HR21 | 4% to 97% |
+| HR22 | 47.40 V to 54.82 V |
+
+**HR26 (charge limit)** was 100.00 A except once. At 14:55:51 UTC on 23 August, at 91% SoC, it dropped to 66.00 A. The pack was at 54.76 V and charging at about 51.6 A, and the last cell reading was 3.403 V to 3.413 V. The cut didn't bind, because the current was already below 66 A. From 92% the current followed the inverter's own SoC taper instead: by the inverter's reading the battery power was 2.80 kW up to 92%, then 2.50, 2.16, 1.83, 1.50 and 1.17 kW at 93% to 97%. Those are the same steps as on my G3 (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)). Charging stopped at 97% at 15:00:20, and HR26 came back in 10 A steps about every 11 s: 76, 86, 96 and then 100 A by 15:01:40.
+
+**HR27 (discharge limit)** was 120.00 A normally. Near the bottom of a discharge the BMS cut it in two steps:
+
+| When (UTC) | HR27 | SoC | HR22 | Discharge current | Lowest cell, last reading |
+|---|---|---|---|---|---|
+| 21 Aug 18:12:56 | 100 A | 8% | 49.88 V | about 55 to 59 A | 3.141 V |
+| 21 Aug 18:16:53 | 60 A | 6% | 48.63 V | about 59 to 60 A | 3.063 V |
+| 23 Aug 05:45:06 | 100 A | 6% | 49.82 V | about 68 A | 3.177 V |
+| 24 Aug 17:51:27 | 100 A | 10% | 49.79 V | about 67 A | 3.115 V |
+| 24 Aug 17:56:22 | 60 A | 8% | 48.57 V | 67 A, then about 63 A | 3.019 V |
+| 25 Aug 02:37:59 | 100 A | 4% | 50.26 V | at rest (0.2 A) | 3.101 V |
+| 25 Aug 05:44:44 | 100 A | 6% | 49.94 V | about 63 to 68 A | 3.142 V |
+
+The 100 A steps came at about 49.8 V to 49.9 V under load (once at rest, at 4% and 50.26 V) and the 60 A steps at about 48.6 V. IR Block 3 is only read every 200 s, so the cell values can be up to 200 s old. HR27 stayed cut until the battery next charged, then came back in 10 A steps about every 11 s, the same release pattern as HR26 on my battery.
+
+**At the floor this battery goes deeper than mine.** At the stop on 24 August, still under about 63 A, the lowest cell read 2.951 V. My 3020 battery's lowest cell was 3.087 V at 5% under 71 A, and 3.167 V at 5% on a slow discharge (see [below](#discharge-to-the-reserve-and-a-full-charge-27-29-september)).
 
 ## Findings from my G3 capture (September 2026)
 
@@ -193,7 +225,7 @@ The battery reported HR25 = 90.00 A and HR26 = HR27 = 80.00 A throughout, except
 Three things follow:
 
 - **HR26 caps charging on a G3 LV.** When the BMS cut HR26 to 3.20 A and left HR27 at 80 A, the charge current dropped to about 2.9 A at once and stayed under HR26, as the labels in [02-holding-registers.md](02-holding-registers.md) say. The G3 LV DSP firmware agrees (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
-- **The inverter tapers the charge itself before the BMS does.** The current held at about 60.5 A (the inverter's 3600 W charge rate at about 54 V) up to 90% SoC, then fell to about 14.6 A over 20 minutes with HR26 and HR27 still at 80 A. An emulator doesn't need to produce this taper; the inverter does it.
+- **The inverter tapers the charge itself before the BMS does.** The current held at about 60.5 A by HR23 up to 90% SoC. The inverter's own reading was about 65 A and a steady 3.47 kW to 3.49 kW, which is its 3.6 kW battery power limit (GivTCP's `Invertor_Max_Bat_Rate` is 3600), not a current cap. Then it fell to about 14.6 A over 20 minutes with HR26 and HR27 still at 80 A. An emulator doesn't need to produce this taper; the inverter does it.
 - **At full charge the BMS keeps HR26 at 3.20 A**, and the inverter tops the pack up every so often at about 3 A for a few minutes, with short discharges of about 2.9 A in between. The BMS held HR26 at 3.20 A from before midnight until 04:37 UTC. Then it released it in steps of 10 A every 11 s (13.20 A, 23.20 A and so on up to 73.20 A), and then to 80.00 A.
 
 ### Voltages at the top of the charge
@@ -245,7 +277,7 @@ At the floor the BMS didn't soften anything: HR27 (discharge limit) stayed at 80
 
 | SoC | Charge current | Notes |
 |---|---|---|
-| 4% to 91% | steady ~60.5 A | about 2 h 5 min; roughly 1% per 88 s, which is 1.6 Ah per % of 160 Ah |
+| 4% to 91% | steady ~60.5 A by HR23 (about 65 A and 3.49 kW by the inverter's reading) | about 2 h 5 min; roughly 1% per 88 s, which is 1.6 Ah per % of 160 Ah |
 | 91% to 97% | 59.8, 54.4, 48.9, 43.1, 37.6, 31.7, 25.9 A | the inverter's own taper, about -5.8 A per %, with HR26 still at 80 A |
 | 98% (00:52 UTC) | cut to 8.00 A | cells jumped from about 3.43 V to 3.52-3.59 V, pack 56.62 V; BMS cuts HR26 |
 | 99% | cut to 3.20 A | pack 57.40 V, highest cell 3.590 V, top spread 68 mV (against about 10 mV at the bottom) |
@@ -286,13 +318,13 @@ To resolve remaining open questions, useful targeted captures would be:
 
 | Capture scenario | Resolves |
 |---|---|
-| Discharge under significant load | Reg 23 (current) magnitude / sign behaviour; reg 21 (suspected SoC) decreasing |
 | Charge from grid (Eco mode) | Reg 11 transition triggers; charge-mode bit positions |
-| Force-charge or force-discharge | FC=06 write traces to address 0x00E7 (control byte) |
-| Low-SoC condition (~10%) | Warning/fault bits in reg 19 |
+| Battery calibration (HR29 non-zero) | HR20 bits 2 and 3 as the calibration end points; any FC=06 writes |
 | Inverter cold boot | First-byte-after-power-on probe sequence (if any) |
 | Imbalance condition | Balancing-active flag identification |
 | Multi-battery added/removed | "Device appears" / "device disappears" handling |
+
+The G3 captures above have already covered discharge under load (HR23 is the pack current in 0.01 A, HR21 the SoC), the low-SoC floor (HR19 bit 3, HR27 cuts on a Gen 3 battery) and forced charge and discharge (no FC=06 writes). An earlier row here expected force-charge writes to address `0x00E7`. That address belongs to the inverter's device `0x11` meter path, not to the battery (see [05-inverter-firmware.md](05-inverter-firmware.md#a316--hy-series-armstorebin)).
 
 ## Validation campaign methodology
 

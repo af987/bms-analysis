@@ -6,12 +6,12 @@ The GivEnergy inverter firmware can also be statically analysed. The most import
 
 ## The invariant
 
-The same GivEnergy Gen 2 LV BMS works with:
+The same GivEnergy Gen 1 / Gen 2 LV BMS works with:
 
 - AC 3.0 inverters
 - Gen 1 Hybrid inverters
 - Gen 2 Hybrid inverters
-- Gen 3 Hybrid (FA-series) inverters
+- Gen 3 Hybrid LV inverters (A316/D316)
 
 Since the BMS firmware (`BMS_ARM.bin` v3017/3020/3022) implements one Modbus dialect, every compatible inverter must speak that same wire protocol or the BMS won't respond. **The wire protocol is the constant; inverter firmware variations are an internal-implementation concern that doesn't reach the wire.**
 
@@ -23,13 +23,13 @@ Static analysis covered the ARM firmware for several variants:
 
 | Variant | Firmware files | Architecture |
 |---|---|---|
-| FA-series (Gen 3 Hybrid) | `FA_A1_xx.bin` (256 KB) + `FA_A2_xx.bin` (17 KB) + `FA_D1_xx.bin` | 3-MCU: ARM1 + ARM2 + DSP |
+| FA-series ("PV String Inverter Gen3") | `FA_A1_xx.bin` (256 KB) + `FA_A2_xx.bin` (17 KB) + `FA_D1_xx.bin` | 3-MCU: ARM1 + ARM2 + DSP |
 | A316 / Hybrid Gen 3 LV | `ARMStore.bin` (145 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
+| A920/A921/A922 / Hybrid Gen 2 | `ARMStore.bin` (126 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
+| A214/D212 / AC Coupled | `ARMStore.bin` (118 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
+| AC 3.0 | (not identified separately) | unknown, but compatible with same BMS |
 
-The community firmware archive files the A316-D316 package under "Hybrid Gen3 LV" and the FA packages under "PV String Inverter Gen3". Earlier versions of this table called A316 a Gen 1/2 hybrid. The FA label has not been rechecked.
-| A920/A921/A922 / AIO | `ARMStore.bin` (126 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
-| A214/D212 (older) | `ARMStore.bin` (118 KB) + `DSPStore.bin` (131 KB) | ARM + DSP |
-| AC 3.0 | (not yet analysed) | unknown, but compatible with same BMS |
+The labels in the first column follow the folders of the community firmware archive: "Hybrid Gen3 LV" (A316-D316, A318, A319), "Hybrid Gen2" (A920 to A922), "Hybrid Gen1" (A187), "AC Coupled" (A212, A214) and "PV String Inverter Gen3" (the FA packages). Earlier versions of this table called A316 a Gen 1/2 hybrid, FA the Gen 3 hybrid and A920 to A922 the AIO. Whether the FA firmware is used with LV batteries at all has not been rechecked.
 
 All ARM firmwares analysed contain:
 
@@ -122,7 +122,7 @@ A316 contains **three** Modbus controller code paths on USART2:
 2. **5-device non-sequential rotation** (devices 1, 5, 6, 7, 8) doing FC=4 with count=2 over a 17-entry register-address table - purpose unclear, possibly HV expansion or parallel-inverter sense.
 3. **LV-battery polling state machine at flash `0x08026C40`** (sole caller `0x08027440`). Despite being grouped here, this path does not use USART2: its requests go to the DSP over UART4 (see below). 4-state, 5-device 1..5 sequential rotation, FC=4 only, addr/count = 0x0000/21, 0x0015/19, 0x0028/20. Gated by 500-tick cadence counter at SRAM `0x200000DE`. Stages request frame at SRAM `0x2000070A + 0x84..+0x89`. RX parser at `0x08026EBC` reads response data from struct offset +6 (consistent with the BMS's non-standard FC=4 framing). Per-device decoded state at SRAM `0x200007A4 + (device_idx * 131)`.
 
-**Path 3 is the LV battery path.** It produces the IR Block 1/2/3 polls Ken sees on his AC 3.0 wire captures.
+**Path 3 is the LV battery path.** It asks for the same IR Block 1/2/3 polls that Ken's AC 3.0 captures show, and that the G3 captures in [06-wire-captures.md](06-wire-captures.md) show on a Hybrid Gen 3 LV.
 
 **No FC=3 HR poll in the A316 ARM firmware.** The HR poll lives on the DSP (`DSPStore.bin`), confirmed in 2026-09. See below.
 
@@ -161,10 +161,10 @@ Analysis in 2026-09 of A316 with its DSP image D316 shows that the ARM and DSP s
   - The FC=4 IR reads that the ARM asks for, with the count capped at 26.
   - FC=6 writes to BMS registers 1 to 4, sent on counters between polls. My 23-hour capture had none: the G3 sent only FC=3 and FC=4 (see [06-wire-captures.md](06-wire-captures.md#no-writes-to-the-battery)), so the conditions for these writes didn't occur in normal running.
 - **Reply check.** The DSP accepts a reply only when its length matches the request and its CRC is correct. See [Reply acceptance](#reply-acceptance) below.
-- **Presence.** The first valid reply marks the BMS present and clears the comms fault. The DSP reports this to the ARM, which marks the battery connected as soon as it sees it and logs what looks like a "battery connected" event. Neither chip has a multi-reply debounce, unlike the 7-reply debounce reported for a Gen 1 inverter. When the DSP reports the battery lost, the ARM marks it disconnected and logs what looks like a "battery lost" event.
+- **Presence.** The first valid reply marks the BMS present and clears the comms fault. The DSP reports this to the ARM. Neither chip has a multi-reply debounce, unlike the 7-reply debounce reported for a Gen 1 inverter. The only ARM code that reads the DSP's "valid reply seen" flag is a battery-type auto-judge routine (HR58 `enable_auto_judge_battery_type`) that nothing in the image calls, and that didn't run in emulation. If it ran, a battery loss would switch HR54 `battery_type` to lead acid, HR111 to 20% and the HR55 capacity to 125 Ah. An earlier version of this page read its writes as "battery connected" and "battery lost" events. They are HR111 values (50 and 20).
 - **BMS lost.** The BMS link task runs every 40 ms and counts ticks since the last valid reply. After 750 ticks (about 30 seconds) it zeroes the charge and discharge current limits and the SoC it holds, and sets the comms fault. The next valid HR reply clears the fault.
-- **Current limits.** If HR13 (BMS firmware version) is 3011 or higher, the DSP takes its charge limit from HR26 and its discharge limit from HR27. Below 3011, it takes both from HR25. During a battery calibration it raises both limits to at least 8.00 A. It scales the charge limit (HR26) down as the battery voltage falls from 48.0 V to 44.0 V, to 10% at 44.0 V and below, and the discharge limit (HR27) down as the voltage rises from 54.5 V to about 58.0 V, to 10% at 58.0 V and above. After the taper the HR26 path never goes below 1.00 A and the HR27 path never below 2.00 A, so HR26 = 0 on its own still lets about 1 A through (see [HR26 = 0 is not a hard stop](#what-the-dsp-does-with-the-bms-status-registers)). The tapered limits become the positive (charge) and negative (discharge) bounds of the battery power. A capture from my G3 agrees: the charge current followed HR26 at the top of a charge (see the G3 LV note in [02-holding-registers.md](02-holding-registers.md)). An earlier version of this page read the tapers the other way round, because my table of the ARM's settings had the two cap values swapped.
-- **Charge taper by SoC.** In BMS mode the DSP also limits the charge power by SoC: full rated power (3.6 kW on my inverter) up to 90% SoC, then down by 9.5% of it for each 1% of SoC, to 24% (864 W on mine) at 98% and above. This is the inverter's own taper seen in my capture, where the charge current fell from 60.5 A to 14.6 A between 90% and 98% SoC with both BMS limits at 80 A (24% of 60.5 A is 14.5 A). During a calibration the step is 7.5% per 1% of SoC, down to 25% at 100%.
+- **Current limits.** If HR13 (BMS firmware version) is 3011 or higher, the DSP takes its charge limit from HR26 and its discharge limit from HR27. Below 3011, it takes both from HR25. During a battery calibration it raises both limits to at least 8.00 A. It scales the charge limit (HR26) down as the battery voltage falls from 48.0 V to 44.0 V, to 10% at 44.0 V and below, and the discharge limit (HR27) down as the voltage rises from 54.5 V to about 58.0 V, to 10% at 58.0 V and above. Both paths are also capped at the battery capacity times HR111 or HR112 (see HR11 below), and in the emulation at fixed ceilings of 60 A (charge) and 75 A (discharge) from the DSP variable `0xD400`. Those ceilings don't bind on my G3 (5 kW inverter, 3.6 kW battery rating): it charges at about 65 A and 3.49 kW by its own reading, and discharges at up to 70.7 A. So the 60/75 A values are either an artefact of the emulation's setup or depend on the model. After the taper the HR26 path never goes below 1.00 A and the HR27 path never below 2.00 A, so HR26 = 0 on its own still lets about 1 A through (see [HR26 = 0 is not a hard stop](#what-the-dsp-does-with-the-bms-status-registers)). The tapered limits become the positive (charge) and negative (discharge) bounds of the battery power. A capture from my G3 agrees: the charge current followed HR26 at the top of a charge (see the G3 LV note in [02-holding-registers.md](02-holding-registers.md)). An earlier version of this page read the tapers the other way round, because my table of the ARM's settings had the two cap values swapped.
+- **Charge taper by SoC.** In BMS mode the DSP also limits the charge power by SoC: full rated power (3.6 kW on my inverter) up to 90% SoC, then down by 9.5% of it for each 1% of SoC, to 24% (864 W on mine) at 98% and above. This is the inverter's own taper seen in my capture, where the charge current fell from 60.5 A to 14.6 A between 90% and 98% SoC with both BMS limits at 80 A (24% of 60.5 A is 14.5 A). By the inverter's own reading the battery power was 2,497 W at 93% and 1,169 W at 97% on 29 September, where the formula gives 2,574 W and 1,206 W. A 3.6 kW G3 with a 9.5 kWh battery shows the same steps, 2.50, 2.16, 1.83, 1.50 and 1.17 kW from 93% to 97% (see [06-wire-captures.md](06-wire-captures.md#findings-from-a-90-hour-g3-capture)). During a calibration the step is 7.5% per 1% of SoC, down to 25% at 100%.
 - **SoC floor.** The DSP holds a SoC floor that defaults to 4%, the floor seen in wire captures. The ARM sets it from HR110 (see the table below). After 5 s at or below the floor the DSP blocks discharge, until the SoC is back at the floor plus 4%. After 5 s at or below the floor minus 3% it forces a charge of at least 300 W, until the SoC is back at the floor plus 1%. A floor below 5% counts as 4% here, so with the default the forced charge starts at 1%. During a calibration it clamps the BMS SoC to between the floor plus 1% and 99%, and neither block runs.
 - **Battery voltage.** The DSP measures the battery voltage itself. Its maximum and minimum are not fixed. The ARM sends them from the inverter settings HR98 `battery_high_voltage_protection_limit` (maximum) and HR97 `battery_low_voltage_protection_limit` (minimum), clamped to 54.0 V to 63.0 V and 20.0 V to 48.0 V. On my inverter HR98 is 58.5 V and HR97 is 43.2 V, so the maximum is 58.5 V and the minimum 43.2 V. The DSP's own defaults of 56.0 V and 42.0 V only hold from boot until the first settings frame from the ARM. During a battery calibration the maximum is raised by 5% (61.4 V on mine) and the minimum lowered to 86%. No charge voltage taken from BMS data was found. See [Battery voltage checks](#battery-voltage-checks) for the thresholds and what a trip does.
 
@@ -217,7 +217,8 @@ These readers are from the D316 DSP image. The ones marked "run" I also ran in t
 | HR19 bit 4 | Copied to a status bit sent to the ARM. |
 | HR19 bit 5 | Outside a calibration, the DSP caps the power request at 120 W of discharge (run: requests of +200 W, 0 W and -50 W all become -120 W). So the inverter discharges a little. My battery pulses this bit at full charge, and in my capture each pulse started a discharge of about 2.8 A. |
 | HR15 bit 0 | At 100% SoC it cancels the "battery full" block, and in forced charge it lets charging go past the upper SoC target. The DSP clears the bit whenever the previous SoC it received was below 100% (run), so below 100% it has no effect. |
-| HR11 | After 50 full-poll replies, it replaces the capacity the DSP uses for the HR111/HR112 current caps (capacity x percentage + 1.5 A) and for the forced charge and discharge power. With the caps at 100% these are far above normal limits, so it matters mainly with reduced HR111/HR112 or in forced charge and discharge. |
+| HR11 | Capped at 10000. After 50 full-poll replies (about 12 s after boot or after a battery loss), it replaces the capacity the DSP uses for the HR111/HR112 current caps (capacity x percentage + 1.5 A) and for the forced charge and discharge power. Before that, or with HR109 not 1, the DSP uses the installer's HR55. There is no table of battery models and no check against one. HR11 = 0 would drop the caps to 1.5 A and 2 A. It matters mainly with reduced HR111/HR112 or in forced charge and discharge. The ARM keeps its own copy and nothing else: the inverter's HR55 reads back as HR11 whenever HR11 is non-zero, and HR11 is never written to the inverter's EEPROM. |
+| HR1 to HR4, HR10, HR12, HR16 to HR18 | Not stored. The reply parser skips them. |
 | HR20 low byte | Sent to the ARM with every frame. |
 | HR20 bit 2 | Outside a calibration, the charge power limit becomes zero at once (run), whatever the power request, including forced charge. After 30 s (1500 checks) the DSP also sets its "battery full" block, which clears 5 s after the cause is gone once SoC is below 99%. It raises no DSP fault. |
 | HR20 bit 3 | The discharge power limit drops to 10% of rated power (360 W on a 3.6 kW inverter), in and out of a calibration (run). This is close to the 340 W that Ken saw when setting HR20 to 0x08 with `modbus_proxy` (see [02](02-holding-registers.md#inline-protocol-modification)). |
@@ -244,7 +245,7 @@ I checked the HR111 and HR112 rows by running the DSP's limit code in Ghidra's e
 
 For a battery emulator, leave HR109 at 1. Otherwise the emulator also has to answer the short HR17 to HR25 poll, and there is a worse problem. The DSP only reads HR13 in the full poll. If it starts in short-poll mode, HR13 reads as 0 and it takes both limits from HR25. But if HR109 changes from 1 to anything else while the inverter runs, the DSP keeps the HR13 it saw and goes on reading HR26 and HR27 at their full-poll positions, past the end of the 23-byte short reply. In the emulator it got 368.86 A for charge (from the reply's CRC bytes) and 655.35 A for discharge (`0xFFFF` left over from an earlier full reply). That is a firmware fault, and HR109 = 1 avoids it.
 
-These results come from firmware analysis and an emulation of the ARM side. A first capture from my G3 (September 2026) confirms the full HR poll every 240 ms and the IR sweep, and shows HR26 is the charge limit. The rest has not been checked on the wire yet.
+These results come from firmware analysis and an emulation of the ARM side. A first capture from my G3 (September 2026) confirms the full HR poll every 240 ms and the IR sweep, and shows HR26 is the charge limit. Later captures (see [06-wire-captures.md](06-wire-captures.md)) also agree with the stop at the 4% SoC floor, the charge taper by SoC, and the small forced discharge on HR19 bit 5 at full charge. The HR111/HR112 caps, the voltage trips and the calibration behaviour have not been checked on the wire yet.
 
 #### Note on the emulator used (27 September 2026)
 
@@ -260,7 +261,7 @@ With all three fixed, I re-checked the voltage checks, the current tapers, the b
 
 Confirmed across all surveyed firmwares and Ken's wire captures:
 
-- **No FC=06 writes during normal polling** - read-only steady-state operation. My G3 LV sent none in 23 hours.
+- **No FC=06 writes during normal polling** - read-only steady-state operation. My G3 LV sent none in any of my captures, 26 to 29 September 2026.
 - **No FC=10** (write multiple) builders found in any inverter firmware
 - **No FC=23** (read/write multiple) builders found
 - **No startup probe / handshake** - the inverter just begins polling device 1 with the standard HR query immediately after boot
