@@ -18,9 +18,13 @@ Versions analysed:
 | 3017 | 143,370 B | 443 | `0x08010000` | Older code structure; major refactor before 3020 |
 | 3020 | 118,794 B | 464 | `0x08010000` | Wire-protocol-identical to 3022 |
 | 3022 | 119,818 B | 492 | `0x08010000` | Reference version for analysis below |
-| Gen 3 / 4xxx | ~165 KB | -- | (different) | Different protocol architecture, not analysed here |
+| Gen 3: 4009, 4010, 4011 | 157,706 / 163,850 / 164,874 B | -- | `0x08010000` | Not analysed. Same 4-byte header (`A9 0F 66 55` for 4009), and the reset vector only lands inside the image with the `0x08010000` load |
 
 3020 and 3022 produce byte-identical wire behaviour - addresses shift but field meanings don't change. 3017 has the same fields but different code structure.
+
+The Gen 3 images haven't been disassembled, but on the wire a Gen 3 battery with firmware 4009 answers the same HR0 to HR27 poll and the same three IR blocks as 30xx, to the same G3 inverter (see [06-wire-captures.md](06-wire-captures.md#findings-from-a-90-hour-g3-capture)). An earlier version of this table called the Gen 3 firmware a "different protocol architecture" with a different load address. The header and vector table don't support that, and the capture shows the same wire protocol.
+
+**Correction (October 2026): flash addresses.** Earlier versions of this page gave the 3022 handler and `subw` addresses as `0x0800_xxxx`, which is inside the bootloader area. They were offsets into the file, not flash addresses. With the `0x08010000` load they are `0x0801_xxxx`, and the function entries are 4 bytes lower than before, because the 4-byte header isn't loaded. I checked each address below by disassembling 3022's `BMS_ARM.bin` with Capstone. The runtime-task addresses further down (`0x0801_xxxx` and `0x0802_xxxx`) were already right.
 
 ### Cross-version stability (audit, 2026-05)
 
@@ -35,7 +39,7 @@ What changed between versions:
 - **3017 -> 3020**: major code refactor. 24 KB of code removed, function count grew (443 -> 464). Same functionality, decomposed into smaller, more focused functions.
 - **3020 -> 3022**: incremental (+1 KB, +28 functions). The cross-charge controller `compute_pack_current_limits` appears to be a 3022-era addition: the FC4 pack table base `0x20003D6A` is referenced 8 times in 3022 and zero times in 3017/3020. HR26/27 source bytes (`0x20000142` / `0x20000144`) existed in earlier versions but with different reference patterns — the current iterating-over-6-pack-slots controller pattern is new in 3022.
 
-**Implications for emulators**: target 3022 wire behaviour as default. For older-firmware inverters, the HR26/27 fields may behave differently or be statically zero.
+**Implications for emulators**: target 3022 wire behaviour as default. For older-firmware inverters, the HR26/27 fields may behave differently or be statically zero. The G3 LV inverter's DSP reads HR26/HR27 only when HR13 (BMS firmware version) is 3011 or higher, and takes both limits from HR25 below that (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
 
 ## MCU identification
 
@@ -53,15 +57,15 @@ Initial SP `0x2000_9BD0` (~40 KB SRAM stack pointer) - consistent with STM32F103
 
 ## Modbus dispatcher
 
-Located at flash address **`0x0800_E1B8`**. The function reads the FC byte from the RX buffer at SRAM `0x2000_385C + 1`, then runs through a `cmp r0, #3 / cmp r0, #4 / cmp r0, #6` chain. Anything else falls into a default branch that returns Modbus exception 0x80|FC with code 1 ("Illegal Function").
+Located at flash address **`0x0801_E1B4`** in 3022. The function reads the FC byte from the RX buffer at SRAM `0x2000_385C + 1`, then runs through a `cmp r0, #3 / cmp r0, #4 / cmp r0, #6` chain. Anything else falls into a default branch that returns Modbus exception 0x80|FC with code 1 ("Illegal Function").
 
 Maximum register count per FC=3 / FC=4 read is `0x80` (128). Exceeding this returns exception code 2 (FC=3) or 4 (FC=4).
 
 | Function | Flash address | Notes |
 |---|---|---|
-| FC dispatcher entry | `0x0800_E1B8` | The cmp #3/#4/#6 chain |
-| FC=3 handler | `0x0800_DD82` | The for-loop that emits standard `device + FC + byte_count + data + CRC` |
-| FC=4 handler | `0x0800_DEBC` | Emits the non-standard `device + FC + addr_echo + data + CRC` |
+| FC dispatcher | `0x0801_E1B4` | The cmp #3/#4/#6 chain |
+| FC=3 handler | `0x0801_DD7E` | The for-loop that emits standard `device + FC + byte_count + data + CRC` |
+| FC=4 handler | `0x0801_DEB8` | Emits the non-standard `device + FC + addr_echo + data + CRC` |
 
 ## RX/TX frame buffer
 
@@ -82,34 +86,34 @@ No per-register handler logic. The table is just a SRAM mirror that other tasks 
 
 | Function | Flash address | What it does |
 |---|---|---|
-| Init function | `0x0800_D534` | Clears all 200 regs to `0xFFFF`, then writes specific defaults (firmware version, hardware-rev constant, serial number bytes, etc.) |
-| Update function | `0x0800_D584` | Recomputes volatile fields each cycle (e.g. the various status / counter fields) |
+| Init function | `0x0801_D530` | Clears all 200 regs to `0xFFFF`, then writes specific defaults (firmware version, hardware-rev constant, serial number bytes, etc.) |
+| Update function | `0x0801_D580` | Recomputes volatile fields each cycle (e.g. the various status / counter fields) |
 
 ## FC=4 field encoding (mixed: some raw, some `-2730`-offset)
 
-The FC=4 handler at `0x0800_DEBC` populates the response from a per-pack structure (145 bytes per pack at SRAM `0x2000_3D6A`, indexed by `device_address - 1`, supports up to 6 packs).
+The FC=4 handler at `0x0801_DEB8` populates the response from a per-pack structure (145 bytes per pack at SRAM `0x2000_3D6A`, indexed by `device_address - 1`, supports up to 6 packs).
 
 **Field-by-field encoding is mixed**. Some fields are emitted with `(stored_value - 2730)` via `subw r1, r1, #0xAAA`; others are emitted directly. The seven `subw` sites and what they encode:
 
 | `subw` flash addr | IR Block | Wire byte offset | Field | Encoding |
 |---|---|---|---|---|
-| `0x0800_DF8C` | Block 1 | 22-23 | Temperature 1 | `(decidegC + 2730)` -> `subw` -> wire = raw decidegC |
-| `0x0800_DF98` | Block 1 | 24-25 | Temperature 2 | same |
-| `0x0800_DFA4` | Block 1 | 26-27 | Temperature 3 | same |
-| `0x0800_DFB0` | Block 1 | 28-29 | Temperature 4 | same |
-| `0x0800_DFBC` | Block 1 | 30-31 | Temperature 5 | same |
-| `0x0800_E0C0` | Block 3 | 32-33 | Max temperature | `(decidegC + 2730)` -> `subw` -> wire = raw decidegC |
-| `0x0800_E0CE` | Block 3 | 34-35 | Min temperature | `(decidegC + 2730)` -> `subw` -> wire = raw decidegC |
+| `0x0801_DF8C` | Block 1 | 22-23 | Temperature 1 | `(decidegC + 2730)` -> `subw` -> wire = raw decidegC |
+| `0x0801_DF98` | Block 1 | 24-25 | Temperature 2 | same |
+| `0x0801_DFA4` | Block 1 | 26-27 | Temperature 3 | same |
+| `0x0801_DFB0` | Block 1 | 28-29 | Temperature 4 | same |
+| `0x0801_DFBC` | Block 1 | 30-31 | Temperature 5 | same |
+| `0x0801_E0C0` | Block 3 | 32-33 | Max temperature | `(decidegC + 2730)` -> `subw` -> wire = raw decidegC |
+| `0x0801_E0CE` | Block 3 | 34-35 | Min temperature | `(decidegC + 2730)` -> `subw` -> wire = raw decidegC |
 
-**Per-cell voltages** at Block 3 bytes 0-31 do NOT pass through `subw` - the cell loop at `0x0800_E0A0..0x0800_E0BE` writes them as raw mV. Confirmed by wire data (`0x0CF4` = 3316 mV directly).
+**Per-cell voltages** at Block 3 bytes 0-31 do NOT pass through `subw` - the cell loop at about `0x0801_E09C..0x0801_E0BE` writes them as raw mV. Confirmed by wire data (`0x0CF4` = 3316 mV directly).
 
 **Max / min cell voltage** at Block 3 bytes 36-39 are also raw mV (no `subw`).
 
 **Block 2 fields** (cycles, capacities, pack voltage, SoC, firmware version) all use direct strb without `subw`.
 
-The internal storage bias of `+2730` for temperatures is presumably to keep them as unsigned uint16 (so -30.0 deg C internal = 2400, well above zero). The same bias appears in the inter-pack PACE protocol on UART4. The two Block 3 fields at offsets 32-35 use the same bias: they are the max and min temperature, and the wire value is raw decidegC. The 90-hour G3 capture confirms this, because they match the inverter's reported `t_max` and `t_min` exactly.
+The internal storage bias of `+2730` for temperatures makes the stored value the temperature in 0.1 K (0 deg C = 2730), so it stays a positive uint16 (-30.0 deg C is stored as 2430). The same bias appears in the inter-pack PACE protocol on UART4. The two Block 3 fields at offsets 32-35 use the same bias: they are the max and min temperature, and the wire value is raw decidegC. The 90-hour G3 capture confirms this, because they match the inverter's reported `t_max` and `t_min` exactly.
 
-**HR reg 24 also uses the bias**, via a separate `subw` at `0x0800_D76A` (writes to the HR table backing store, not to the FC=4 response). It encodes the maximum cell temperature in whole °C, `(max_raw - 2730) / 10`. See [02-holding-registers.md](02-holding-registers.md).
+**HR reg 24 also uses the bias**, via a separate `subw` at `0x0801_D76A` (writes to the HR table backing store, not to the FC=4 response). It encodes the maximum cell temperature in whole °C, `(max_raw - 2730) / 10`. See [02-holding-registers.md](02-holding-registers.md).
 
 For an emulator: emit cells / max / min as raw mV; emit Block 1 temps as raw decidegC (signed int16 if you need negative temperatures); emit Block 3 bytes 32-35 as max and min temperature in raw decidegC, the same encoding as the Block 1 temps.
 
@@ -132,6 +136,8 @@ Flash entry `0x0802224C` (no Ghidra auto-fn). 10-register `push.w` prologue. The
 | `0x08022456` | `*(u8*)0x200000D9 = aggregate(pack[N*145 + 0x8D])` | HR20 bit 2 (Over-Voltage) global aggregate |
 
 The HR21 delta-limiter explains the slow SoC drift Ken observed across the capture window: even when the upstream SoC byte at `0x20000189` jumps, the mirror only advances `±1` per tick.
+
+**HR11 is not the remaining charge on the wire.** The static reading above calls `0x20000186` "remaining cAh". The captures disagree: HR11 stays at the capacity of the packs online. On a G3 9.5 kWh battery (firmware 4009) it was 186 for 90 hours while IR Block 2's remaining capacity ran from 7.48 Ah to 191.72 Ah, and on my 8.2 kWh battery (3020) it is 160 throughout (see [06-wire-captures.md](06-wire-captures.md)). So `0x20000186` holds a capacity, and the "remaining" label is unconfirmed at best.
 
 ### FUN_080181F2 - the SoC computer
 
@@ -192,7 +198,7 @@ For an emulator that runs the firmware in Unicorn as a backend: write directly t
 **Discovered via Cortex-M boot-from-reset Unicorn harness (2026-05-13)**: ran fc3_init + fc3_update_task to populate the HR table, then drove the PACE byte handler (entry `0x0801983C`, takes byte in r0) with synthesized PACE frames, then invoked `pace_cid2_dispatch` past its initial BGT (`0x0801A17C`) with each CID2 0x00..0xFF. Only CID2 = 0xA7 produced writes to `0x20000186`.
 
 Also discovered via the same harness:
-- **CID2 = 0xB1, 0xB2** write the BCD serial buffer at `0x20000190..0x20000195` (the source for the HR17 / HR18 device-fingerprint hash). So 0xB1 / 0xB2 are the AFE -> BMS "set device serial" commands.
+- **CID2 = 0xB1, 0xB2** write the 6-byte BCD buffer at `0x20000190..0x20000195`, the source of the HR17 / HR18 hash. Captures show HR17 changing once a second, so that buffer is a BCD clock, not a serial number (see [02-holding-registers.md](02-holding-registers.md)). So 0xB1 / 0xB2 most likely set the BMS clock. An earlier version of this note called them "set device serial" commands.
 - **CID2 = 0xB3** writes adjacent fields at `0x2000018C / 0x2000018E` (likely other capacity-related fields).
 - **CID2 = 0xA4** is a soft-reset memset that clears a large contiguous SRAM region (PC `0x0802B5DC` with 4-byte stride). Touches many addresses incidentally but isn't a semantic per-field writer.
 
@@ -218,7 +224,7 @@ Several writers remain opaque even after dynamic Unicorn tracing of all candidat
 
 - **HR11 cAh u16 writer** (`*(u16*)0x20000186`): hypothesis is a pack-online state-change handler that fires only when a new pack appears on the PACE bus. Would require sustained simulation with synthesized AFE traffic.
 - **HR15 bits 1/2 sources** (`*(u8*)0x20000197` / `0x20000198`): written inside `pace_cid2_dispatch` via base+offset addressing, only when a valid PACE frame is in the RX buffer.
-- **HR16 source** (`*(u8*)0x20000518`): same situation -- PACE-derived, requires frame injection.
+- **HR16 source** (`*(u8*)0x20000518`): same situation -- PACE-derived, requires frame injection. HR16 has been 0 in every capture so far, including a Gen 3 battery on firmware 4009, and the G3 LV inverter's DSP doesn't store it (see [05-inverter-firmware.md](05-inverter-firmware.md#a316-the-dsp-runs-the-bms-bus)).
 - **Block 3 mystery field sources** (`pack[N*145 + 0x73..0x76]`): same -- written by deep PACE chain.
 
 All four share one root cause: they're populated by PACE-protocol code paths that fire only on bus events. For an emulator that synthesizes wire output directly, none matter; for a deeper firmware-internals model, frame injection or long-running simulation would be needed.
@@ -229,7 +235,7 @@ The BMS firmware also implements a **PACE / Pylontech-compatible protocol on UAR
 
 - Protocol version `0x25`, CID1 `0x46` (LiFePO4 device class)
 - Standard PACE wire format: `~ VER ADR CID1 CID2 LENGTH INFO CHKSUM \r`
-- The `0xAAA` offset on cell voltages mentioned above is an artefact of this internal protocol
+- The `0xAAA` (2730) bias on temperatures described above (0.1 K) is most likely this internal protocol's encoding. Cell voltages don't carry it
 
 This is independent of the inverter-side Modbus link and is not relevant for an inverter <-> BMS emulator.
 
@@ -248,10 +254,10 @@ Useful entry points to start from:
 | Address | What's there |
 |---|---|
 | File offset 4 onwards | Cortex-M vector table (reset vector at idx 1) |
-| Flash `0x0800_E1B8` | Modbus FC dispatcher (the cmp #3/#4/#6 chain) |
-| Flash `0x0800_DD82` | FC=3 handler |
-| Flash `0x0800_DEBC` | FC=4 handler (non-standard response framing) |
-| Flash `0x0800_D534` | FC=3 table init function |
+| Flash `0x0801_E1B4` | Modbus FC dispatcher (the cmp #3/#4/#6 chain) |
+| Flash `0x0801_DD7E` | FC=3 handler |
+| Flash `0x0801_DEB8` | FC=4 handler (non-standard response framing) |
+| Flash `0x0801_D530` | FC=3 table init function |
 | SRAM `0x2000_39C0` | Holding-register table backing store |
 | SRAM `0x2000_385C` | Modbus RX/TX frame buffer |
 
