@@ -195,6 +195,61 @@ The 100 A steps came at about 49.8 V to 49.9 V under load (once at rest, at 4% a
 
 **At the floor this battery goes deeper than mine.** At the stop on 24 August, still under about 63 A, the lowest cell read 2.951 V. My 3020 battery's lowest cell was 3.087 V at 5% under 71 A, and 3.167 V at 5% on a slow discharge (see [below](#discharge-to-the-reserve-and-a-full-charge-27-29-september)).
 
+### A battery start, a charge to 100% and the reserve (30 September to 1 October)
+
+@af987 contributed a second capture from the same G3 HY 3.6 kW and 9.5 kWh battery (BMS firmware 4009) in PR #32: [captures/G3_HY_3_6_G3_9_5/cold_start_full_cycle.joined.parquet.redacted](../captures/G3_HY_3_6_G3_9_5/). It runs from 10:55 UTC on 30 September to 15:23 UTC on 1 October 2026, with 425,474 request and response pairs joined with GivTCP. HR23 and the inverter's battery power correlate at 0.996 over every HR poll, with no time shift. His capture covers two starts, a solar charge, a forced charge to 100%, a forced discharge for the evening export, the night, a forced discharge to 4% and a short dwell there, and a recharge. All times below are UTC (BST is one hour ahead).
+
+Every HR poll in the capture was FC=3, device 1, start 0, count 28. There was no short HR17 to HR25 poll, so HR109 was 1, and there was no FC=6 write. HR26 stayed at 100.00 A, HR25 at 150.00 A and HR11 at 186 throughout.
+
+The joined file only keeps requests that got a reply, so it can't show how long the inverter polled before the battery first answered.
+
+**The battery's start.** The capture has two starts, at 10:55:03.738 and at 11:20:33.556, 377 s after the previous reply. In both, the inverter was already running. Its first IR reply came about 4 s after the first HR reply and was partway through its usual sweep (device 4 Block 2, and device 2 Block 3), and GivTCP was already reading the inverter, with 6.6 V at its battery terminals. So each start is the battery's own start, and the battery went through the same steps at the same offsets from its first reply, to within 20 ms:
+
+| After the first reply | What the wire shows |
+|---|---|
+| 0 s | HR19 = `0x0E`, HR20 = `0x04` (bit 2, over-voltage) at 23% or 27% SoC and about 52.7 V, HR23 = +0.01 A, HR15 = 0. HR26, HR27, HR21 and HR22 have their normal values. The inverter reads 6.6 to 6.7 V |
+| 7.6 s | HR19 = `0x8F`. HR23 reads -3.9 A or -4.3 A, falling to near 0 over about 3 s, as the battery charges the inverter's input capacitors |
+| about 10 to 11.5 s | The inverter's own battery voltage (GivTCP) reaches 49 to 53 V |
+| 11.7 s | HR19 = `0xCF`, its normal discharge and idle value |
+| 12.2 s | HR20 = 0 |
+| 22.5 s and 22.75 s | First charge current, 10.5 A and 9.1 A |
+| 624 s | HR15 goes from 0 to 1 |
+
+So HR19 bits 6 and 7 (0-indexed) are clear while the battery's output is off, and HR20 bit 2 is set at start-up with no over-voltage. Every earlier G3 capture had bits 6 and 7 set all the time. The G3 LV DSP doesn't read bits 6 and 7 (see [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers)). The charge started about 10 s after the inverter's own voltage reading came up to the pack voltage. That fits the DSP's voltage mismatch check and its start permit, which both wait 10 s (see [05-inverter-firmware.md](05-inverter-firmware.md#battery-voltage-checks)), though GivTCP's 1.4 s sampling makes the timing rough. Device 1's first IR replies came 64 s and 134 s after the start, when the sweep reached device 1, and their values were normal. GivTCP showed the battery's SoC, cycles and remaining capacity from before each start until device 1's Block 2 was read again, 92 s and 162 s after the start.
+
+**The top of the charge.** The forced charge started at 14:11:32 at HR21 = 73%. The current held at about 64.3 A by HR23 (3.49 kW by the inverter) up to 90%, and then followed the inverter's own SoC taper. HR26 and HR27 never moved:
+
+| HR21 | Reached at | HR23 | Inverter's battery power |
+|---|---|---|---|
+| 90% | 14:42:29 | 64.1 A | 3.49 kW |
+| 91% | 14:44:22 | 58.2 A | 3.16 kW |
+| 93% | 14:48:43 | 46.4 A | 2.50 kW |
+| 95% | 14:54:16 | 34.4 A | 1.83 kW |
+| 97% | 15:02:00 | 22.2 A | 1.17 kW |
+| 98% | 15:07:25 | 16.05 A | 0.84 kW |
+| 100% | 15:16:54 | 16.0 A | 0.84 kW |
+
+From 98% the current stayed at the DSP's floor of 24% of rated power. HR21 read 100% from 15:16:54, and the pack was still drawing 16.0 A (about 0.87 kW by HR23 and HR22, and 0.84 kW by the inverter). The highest cell was 3.385 V to 3.404 V. The highest cell in the whole capture was 3.418 V, at 90% and 64 A, and HR22 peaked at 54.73 V. HR20 stayed 0, and HR19 stayed `0xCE`, with no bit 5 and no bit 3 clear.
+
+The battery set HR15 bit 0 at HR21 = 100% (3,340 of 3,416 polls). On a G3 that cancels the DSP's "battery full" block and lets a forced charge go past its upper SoC target (see [05-inverter-firmware.md](05-inverter-firmware.md#what-the-dsp-does-with-the-bms-status-registers)). The inverter kept charging at 16 A for 14 minutes at 100%. HR15 bit 0 cleared at 15:30:35, and the current fell to zero at 15:30:54, 19 s later. That fits the DSP stopping the charge. But af987 says he stopped the forced charge himself soon after the battery reached 100%, so the capture doesn't settle which one ended it.
+
+HR21 runs ahead of the IR Block 2 SoC on the way up. HR21 read 100% while Block 2 read 97% (193.49 Ah of 200.00 Ah), and Block 2 peaked at 99%. In 510 Block 2 reads, HR21 was 0 to 3 points above the Block 2 SoC and never below it, with the gap opening while charging above about 40% and closing during discharge. The inverter's taper and its 100% follow HR21. GivTCP's battery SoC comes from Block 2 and never showed 100%.
+
+This is very different from my Gen 1 battery (3020), which cuts HR26 from 80 A to 32, 8 and 3.2 A at 98% as its highest cell passes about 3.47 to 3.50 V, sets HR19 bit 5 and HR20 bit 2 at 100%, sends HR15 = 0 at 100%, and only releases HR26 when the highest cell falls below about 3.40 V (see [below](#a-solar-charge-to-full-and-the-trickle-release-29-september)). af987's 9.5 kWh battery left the whole taper to the inverter, and its cells were still on the flat part of the LFP curve at 100%. The HR26 cut to 66 A seen once in his August capture, at 91% with the highest cell at about 3.41 V, didn't happen here, even with a cell at 3.418 V under 64 A.
+
+**The reserve.** The forced discharge to the reserve started at 07:47:21 on 1 October and ran at 66 to 69 A. HR27 stepped down twice:
+
+| When | HR27 | HR21 | HR22 | HR23 | Lowest cell, last reading |
+|---|---|---|---|---|---|
+| 08:00:59 | 100 A | 11% | 49.79 V | -68.1 A | 3.109 V |
+| 08:10:32 | 60 A | 5% | 48.42 V | -69.4 A | 3.033 V |
+
+The 100 A step came at the same voltage under load as in August, and the 60 A step slightly lower (48.42 V against 48.57 V to 48.63 V). The 60 A step cut the current to about 62.7 A, as on 24 August. HR21 first read 4% at 08:12:07.733, and the current was zero 0.48 s later, faster than the DSP's 5 s floor check. A forced discharge stops at the floor in its own code (see [05-inverter-firmware.md](05-inverter-firmware.md#inverter-settings-that-change-the-bms-link)), which may explain it.
+
+The battery then sat at 4% from 08:12:08 to 08:27:13, about 15 minutes, with HR23 between -0.10 A and +0.46 A. HR21 and the Block 2 SoC both read 4%, with 8.98 Ah remaining. At rest the pack recovered from 47.94 V to 49.94 V, and the cells to 3.064 V to 3.081 V (lowest) and 3.102 V to 3.117 V (highest). HR19 only toggled bit 0 with the sign of the current. Bit 3 didn't clear, which fits the August finding that it clears only at rest with a cell at or below about 3.04 V. A forced charge at 64.4 A started at 08:27:13, and HR21 went to 5% half a second later. HR27 stayed at 60 A for 38 s, then came back by 10 A every 11.04 s, from 70 A at 08:27:51 to 120 A at 08:28:46.
+
+HR15 was 1 in 57% of polls in this capture. Apart from the 624 s after each start, it was 0 for 223 s at the start of the forced charge, for 11.6 hours from 15:30:35 to 03:06:04 (the evening discharge and the night, until the next charge started), and for about 12 and 4 minutes during the charge on 1 October. Its meaning on 4009 is still open.
+
 ## Findings from my G3 capture (September 2026)
 
 I captured my own Hybrid Gen3 LV (firmware D0.316-A0.316) with its GivEnergy 8.2 kWh battery (BMS firmware 3020) using the Raspberry Pi capture box in [capture-box/](../capture-box/README.md), from 17:05 UTC on 26 September to 15:57 UTC on 27 September 2026, about 23 hours. The dongle was tapped on the battery's "Batt to Batt" comms terminals, and GivTCP's MQTT output was recorded alongside. The capture covers an evening of discharge, a forced overnight charge to 100%, the night at full charge, and the next day, when SoC stayed between 83% and 100%. The inverter setting HR109 `enable_bms_read` was 1, and HR111/HR112 (charge/discharge limit) were both 44.
